@@ -66,7 +66,7 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Build
-        run: wails build -platform linux/amd64 -tags webkit2_4_1
+        run: wails build -platform linux/amd64 -tags webkit2_41
 
       - name: Rename binary
         run: mv build/bin/portforge build/bin/portforge-linux-amd64-webkit4_1
