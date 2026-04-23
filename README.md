@@ -28,10 +28,11 @@ This program is still at a very early stage. There are going to be bugs, I hones
 - Add support for editing per-game executable arguments from the PortForge UI
 - Add support for managing different versions of games
 - Add support for managing mods without reinstalling
+- Add support for building games for mobile platforms like Android and Nintendo Switch
 - Expand documentation to include how to dump ROMs
 - Symlink ROM files instead of copying them (won't work on Windows)
 - Expand ROM management functionality
-- Add complete ROM database based on No-Intro and Redump
+- Build complete ROM database based on No-Intro and Redump
 - Add support for playing Rom files via emulators
 - Add support for getting older PC games to run
 
