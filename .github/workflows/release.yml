@@ -40,6 +40,42 @@ jobs:
           name: portforge-linux
           path: build/bin/portforge-linux-amd64
 
+  # Separate build for Arch Linux, Fedora 37+, and other distros that ship
+  # webkit2gtk 4.1 (libsoup3) instead of the older 4.0 (libsoup2).
+  build-linux-webkit4_1:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build
+        run: wails build -platform linux/amd64 -tags webkit2_4_1
+
+      - name: Rename binary
+        run: mv build/bin/portforge build/bin/portforge-linux-amd64-webkit4_1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portforge-linux-webkit4_1
+          path: build/bin/portforge-linux-amd64-webkit4_1
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -96,7 +132,7 @@ jobs:
           path: build/bin/portforge-macos.zip
 
   release:
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-linux, build-linux-webkit4_1, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -108,5 +144,6 @@ jobs:
         with:
           files: |
             portforge-linux/portforge-linux-amd64
+            portforge-linux-webkit4_1/portforge-linux-amd64-webkit4_1
             portforge-windows/portforge.exe
             portforge-macos/portforge-macos.zip
