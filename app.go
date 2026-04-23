@@ -27,6 +27,14 @@ import (
 
 var argRe = regexp.MustCompile(`\$\{(\w+)\}|\$(\w+)`)
 
+// httpClient is used for all outbound requests. The download timeout is kept
+// generous (30 min) to accommodate large game source archives over slow links,
+// while the API timeout is short since those responses are tiny.
+var (
+	httpClient    = &http.Client{Timeout: 30 * time.Minute}
+	httpAPIClient = &http.Client{Timeout: 15 * time.Second}
+)
+
 const (
 	mediaItemsZipURL  = "https://github.com/portforge/portforge-mediaitems/archive/refs/heads/main.zip"
 	mediaItemsAPIURL  = "https://api.github.com/repos/portforge/portforge-mediaitems/commits/main"
@@ -96,7 +104,7 @@ func (a *App) CheckMediaItemsUpdate() (bool, error) {
 		return false, err
 	}
 	req.Header.Set("Accept", "application/vnd.github.sha")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpAPIClient.Do(req)
 	if err != nil {
 		return false, err
 	}
@@ -125,7 +133,7 @@ func (a *App) SyncMediaItems(destDir string) error {
 	defer os.Remove(tmpZip)
 
 	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "downloading", "percent": 0})
-	resp, err := http.Get(mediaItemsZipURL)
+	resp, err := httpClient.Get(mediaItemsZipURL)
 	if err != nil {
 		tmp.Close()
 		return err
@@ -221,7 +229,8 @@ func extractZipStrip1(src, destDir string) error {
 			continue
 		}
 		destPath := filepath.Join(destDir, filepath.FromSlash(name))
-		if !strings.HasPrefix(filepath.Clean(destPath), destDir+string(os.PathSeparator)) {
+		rel, err := filepath.Rel(destDir, destPath)
+		if err != nil || strings.HasPrefix(rel, "..") {
 			return fmt.Errorf("invalid path in zip: %s", f.Name)
 		}
 		if f.FileInfo().IsDir() {
@@ -1277,7 +1286,7 @@ func fetchFile(url, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 		return err
 	}
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return err
 	}
@@ -1345,7 +1354,7 @@ func (pr *progressReader) Read(p []byte) (n int, err error) {
 }
 
 func (a *App) downloadFile(url string, dest *os.File) error {
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return err
 	}
@@ -1371,7 +1380,8 @@ func extractZip(src, destDir string) error {
 
 	for _, f := range r.File {
 		destPath := filepath.Join(destDir, f.Name)
-		if !strings.HasPrefix(filepath.Clean(destPath), destDir+string(os.PathSeparator)) {
+		rel, err := filepath.Rel(destDir, destPath)
+		if err != nil || strings.HasPrefix(rel, "..") {
 			return fmt.Errorf("invalid path in zip: %s", f.Name)
 		}
 		if f.FileInfo().IsDir() {
