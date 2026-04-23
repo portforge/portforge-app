@@ -27,6 +27,231 @@ import (
 
 var argRe = regexp.MustCompile(`\$\{(\w+)\}|\$(\w+)`)
 
+const (
+	mediaItemsZipURL  = "https://github.com/portforge/portforge-mediaitems/archive/refs/heads/main.zip"
+	mediaItemsAPIURL  = "https://api.github.com/repos/portforge/portforge-mediaitems/commits/main"
+	mediaItemsSHAFile = ".portforge-sha"
+)
+
+// GetDefaultPaths returns the platform-appropriate default locations for the
+// MediaItems library and user library folders.
+func (a *App) GetDefaultPaths() map[string]string {
+	home, _ := os.UserHomeDir()
+	var mediaItems, library string
+	switch runtime.GOOS {
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		mediaItems = filepath.Join(appData, "PortForge", "MediaItems")
+		library = filepath.Join(appData, "PortForge", "Library")
+	case "darwin":
+		mediaItems = filepath.Join(home, "Library", "Application Support", "PortForge", "MediaItems")
+		library = filepath.Join(home, "Library", "Application Support", "PortForge", "Library")
+	default:
+		dataHome := os.Getenv("XDG_DATA_HOME")
+		if dataHome == "" {
+			dataHome = filepath.Join(home, ".local", "share")
+		}
+		mediaItems = filepath.Join(dataHome, "PortForge", "MediaItems")
+		library = filepath.Join(dataHome, "PortForge", "Library")
+	}
+	return map[string]string{
+		"mediaItemsPath": mediaItems,
+		"dataPath":       library,
+	}
+}
+
+// GetMediaItemsSHA returns the short commit SHA of the currently installed
+// MediaItems library, or an empty string if not yet downloaded.
+// GetMediaItemsSHA returns the short commit SHA of the synced MediaItems library.
+// Returns "unknown" if MediaItems are present but were not synced through PortForge,
+// or an empty string if the configured path has no MediaItems at all.
+func (a *App) GetMediaItemsSHA() string {
+	if a.metadataPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(a.metadataPath, mediaItemsSHAFile))
+	if err != nil {
+		// No SHA file — check whether MediaItems actually exist at the path.
+		if _, err := os.Stat(filepath.Join(a.metadataPath, "VideoGameVersion")); err == nil {
+			return "unknown"
+		}
+		return ""
+	}
+	sha := strings.TrimSpace(string(data))
+	if len(sha) > 7 {
+		sha = sha[:7]
+	}
+	return sha
+}
+
+// CheckMediaItemsUpdate fetches the latest commit SHA from GitHub and returns
+// true if it differs from the currently synced version.
+func (a *App) CheckMediaItemsUpdate() (bool, error) {
+	installed, err := os.ReadFile(filepath.Join(a.metadataPath, mediaItemsSHAFile))
+	if err != nil {
+		return true, nil // no SHA file → always offer a sync
+	}
+	req, err := http.NewRequest("GET", mediaItemsAPIURL, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Accept", "application/vnd.github.sha")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(installed)) != strings.TrimSpace(string(body)), nil
+}
+
+// SyncMediaItems downloads the latest MediaItems from GitHub into a temp
+// directory, then copies all files over destDir with overwrite, leaving any
+// local-only files untouched. Records the commit SHA when done.
+func (a *App) SyncMediaItems(destDir string) error {
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return err
+	}
+
+	// Download ZIP to a temp file.
+	tmp, err := os.CreateTemp("", "portforge-mediaitems-*.zip")
+	if err != nil {
+		return err
+	}
+	tmpZip := tmp.Name()
+	defer os.Remove(tmpZip)
+
+	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "downloading", "percent": 0})
+	resp, err := http.Get(mediaItemsZipURL)
+	if err != nil {
+		tmp.Close()
+		return err
+	}
+	pr := &progressReader{
+		r:     resp.Body,
+		total: resp.ContentLength,
+		onPct: func(pct int) {
+			wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "downloading", "percent": pct})
+		},
+	}
+	_, err = io.Copy(tmp, pr)
+	resp.Body.Close()
+	tmp.Close()
+	if err != nil {
+		return err
+	}
+
+	// Extract into a temp directory.
+	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "extracting", "percent": 0})
+	tmpDir, err := os.MkdirTemp("", "portforge-mediaitems-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := extractZipStrip1(tmpZip, tmpDir); err != nil {
+		return fmt.Errorf("extraction failed: %w", err)
+	}
+
+	// Copy extracted files over destDir, overwriting existing files.
+	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "copying", "percent": 0})
+	if err := copyDirMerge(tmpDir, destDir); err != nil {
+		return fmt.Errorf("sync failed: %w", err)
+	}
+
+	// Fetch and store the commit SHA.
+	if req, err := http.NewRequest("GET", mediaItemsAPIURL, nil); err == nil {
+		req.Header.Set("Accept", "application/vnd.github.sha")
+		if shaResp, err := http.DefaultClient.Do(req); err == nil {
+			body, _ := io.ReadAll(shaResp.Body)
+			shaResp.Body.Close()
+			_ = os.WriteFile(filepath.Join(destDir, mediaItemsSHAFile), body, 0644)
+		}
+	}
+
+	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "done", "percent": 100})
+	return nil
+}
+
+// copyDirMerge copies all files from src into dst, overwriting existing files.
+// Directories in dst that are not in src are left untouched.
+func copyDirMerge(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		return copyFile(path, target)
+	})
+}
+
+// extractZipStrip1 extracts a ZIP archive into destDir, stripping the single
+// top-level directory that GitHub adds to repo archives (e.g. "repo-main/").
+func extractZipStrip1(src, destDir string) error {
+	r, err := zip.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	// Determine the common top-level prefix to strip.
+	prefix := ""
+	if len(r.File) > 0 {
+		parts := strings.SplitN(filepath.ToSlash(r.File[0].Name), "/", 2)
+		if len(parts) > 1 {
+			prefix = parts[0] + "/"
+		}
+	}
+
+	destDir = filepath.Clean(destDir)
+	for _, f := range r.File {
+		name := filepath.ToSlash(f.Name)
+		name = strings.TrimPrefix(name, prefix)
+		if name == "" {
+			continue
+		}
+		destPath := filepath.Join(destDir, filepath.FromSlash(name))
+		if !strings.HasPrefix(filepath.Clean(destPath), destDir+string(os.PathSeparator)) {
+			return fmt.Errorf("invalid path in zip: %s", f.Name)
+		}
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(destPath, 0755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
+		if err != nil {
+			rc.Close()
+			return err
+		}
+		_, err = io.Copy(out, rc)
+		out.Close()
+		rc.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type App struct {
 	ctx          context.Context
 	metadataPath string // library: .mediaitem.json, .install.json, artwork (read-only)

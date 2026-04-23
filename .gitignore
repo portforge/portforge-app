@@ -416,4 +416,3 @@ build/bin
 *.log
 node_modules
 frontend/dist
-mediaitems

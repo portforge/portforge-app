@@ -10,12 +10,20 @@ export function CancelInstall() {
   return window['go']['main']['App']['CancelInstall']();
 }
 
+export function CheckMediaItemsUpdate() {
+  return window['go']['main']['App']['CheckMediaItemsUpdate']();
+}
+
 export function CleanBuildDir(arg1) {
   return window['go']['main']['App']['CleanBuildDir'](arg1);
 }
 
 export function GetActiveInstall() {
   return window['go']['main']['App']['GetActiveInstall']();
+}
+
+export function GetDefaultPaths() {
+  return window['go']['main']['App']['GetDefaultPaths']();
 }
 
 export function GetGames() {
@@ -28,6 +36,10 @@ export function GetInstallPrompts(arg1) {
 
 export function GetInstallState(arg1) {
   return window['go']['main']['App']['GetInstallState'](arg1);
+}
+
+export function GetMediaItemsSHA() {
+  return window['go']['main']['App']['GetMediaItemsSHA']();
 }
 
 export function GetPlatform() {
@@ -80,6 +92,10 @@ export function SaveSettings(arg1, arg2) {
 
 export function SelectFolder() {
   return window['go']['main']['App']['SelectFolder']();
+}
+
+export function SyncMediaItems(arg1) {
+  return window['go']['main']['App']['SyncMediaItems'](arg1);
 }
 
 export function UninstallVersion(arg1) {

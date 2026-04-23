@@ -7,15 +7,21 @@ export function AddROMFiles(arg1:string,arg2:Array<string>,arg3:boolean):Promise
 
 export function CancelInstall():Promise<void>;
 
+export function CheckMediaItemsUpdate():Promise<boolean>;
+
 export function CleanBuildDir(arg1:string):Promise<void>;
 
 export function GetActiveInstall():Promise<string>;
+
+export function GetDefaultPaths():Promise<Record<string, string>>;
 
 export function GetGames():Promise<Array<models.VideoGame>>;
 
 export function GetInstallPrompts(arg1:string):Promise<Array<models.ArgPrompt>>;
 
 export function GetInstallState(arg1:string):Promise<models.InstallState>;
+
+export function GetMediaItemsSHA():Promise<string>;
 
 export function GetPlatform():Promise<string>;
 
@@ -42,6 +48,8 @@ export function MatchDroppedROMs(arg1:Array<string>):Promise<models.ROMDropSumma
 export function SaveSettings(arg1:string,arg2:string):Promise<void>;
 
 export function SelectFolder():Promise<string>;
+
+export function SyncMediaItems(arg1:string):Promise<void>;
 
 export function UninstallVersion(arg1:string):Promise<void>;
 

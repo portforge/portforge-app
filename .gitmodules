@@ -1,0 +1,3 @@
+[submodule "mediaitems"]
+	path = mediaitems
+	url = https://github.com/portforge/portforge-mediaitems
