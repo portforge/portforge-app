@@ -33,7 +33,8 @@ func main() {
 		OnStartup:                app.startup,
 		EnableDefaultContextMenu: false,
 		DragAndDrop: &options.DragAndDrop{
-			EnableFileDrop: true,
+			EnableFileDrop:     true,
+			DisableWebViewDrop: true,
 		},
 		Bind: []interface{}{
 			app,

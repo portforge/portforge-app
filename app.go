@@ -326,6 +326,11 @@ func (a *App) ValidateMediaItemsPath() string {
 func (a *App) SaveSettings(mediaItemsPath string, dataPath string) error {
 	a.metadataPath = mediaItemsPath
 	a.dataPath = dataPath
+
+	// Ensure both directories exist so the app is usable immediately after setup.
+	_ = os.MkdirAll(mediaItemsPath, 0755)
+	_ = os.MkdirAll(dataPath, 0755)
+
 	path, err := settingsFilePath()
 	if err != nil {
 		return err
