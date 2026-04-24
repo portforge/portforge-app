@@ -24,6 +24,7 @@ This program is still at a very early stage. There are going to be bugs, I hones
 
 ## Roadmap
 
+- Make a Flatpak build for Linux
 - Add support for per-game executable arguments
 - Add support for editing per-game executable arguments from the PortForge UI
 - Add support for managing different versions of games
