@@ -186,6 +186,33 @@ type VideoGameVersion struct {
 	DataSources     []DataSource    `json:"_dataSources,omitempty"`
 }
 
+// OpticalDrive represents a detected optical drive and its current state.
+type OpticalDrive struct {
+	Path       string `json:"path"`       // device node: /dev/sr0, D:\, /dev/disk2
+	RawPath    string `json:"rawPath"`    // raw device for direct sector reads
+	Label      string `json:"label"`      // drive or disc label for display
+	HasDisc    bool   `json:"hasDisc"`
+	MountPoint string `json:"mountPoint"` // empty if disc is not mounted
+}
+
+// DiscInfo holds the result of probing an inserted disc.
+type DiscInfo struct {
+	Drive      string `json:"drive"`
+	DiscType   string `json:"discType"`   // "cd", "dvd", "bd", "data", "unknown"
+	System     string `json:"system"`     // "psx", "ps2", "gamecube", "wii", "xbox", "xbox360", ""
+	Serial     string `json:"serial"`     // game serial if extracted (e.g. "SLUS-00594")
+	Volume     string `json:"volume"`     // ISO 9660 volume label
+	MountPoint string `json:"mountPoint"`
+}
+
+// DumpProgress is emitted during and after a redumper session.
+type DumpProgress struct {
+	Drive   string  `json:"drive"`
+	Phase   string  `json:"phase"`   // "dumping", "verifying", "done", "error"
+	Percent float64 `json:"percent"`
+	Error   string  `json:"error,omitempty"`
+}
+
 type VideoGame struct {
 	ItemType        string         `json:"_itemType"`
 	SchemaVersion   string         `json:"_schemaVersion"`

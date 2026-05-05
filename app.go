@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,10 @@ import (
 
 var argRe = regexp.MustCompile(`\$\{(\w+)\}|\$(\w+)`)
 
+// devMetadataOverride is empty in production. The dev build tag (set by
+// "wails dev") populates it with the project-local mediaitem folder.
+var devMetadataOverride string
+
 // httpClient is used for all outbound requests. The download timeout is kept
 // generous (30 min) to accommodate large game source archives over slow links,
 // while the API timeout is short since those responses are tiny.
@@ -41,30 +46,25 @@ const (
 	mediaItemsSHAFile = ".portforge-sha"
 )
 
-// GetDefaultPaths returns the platform-appropriate default locations for the
-// MediaItems library and user library folders.
+// GetDefaultPaths returns the platform-appropriate default location for the
+// user library folder.
 func (a *App) GetDefaultPaths() map[string]string {
 	home, _ := os.UserHomeDir()
-	var mediaItems, library string
+	var library string
 	switch runtime.GOOS {
 	case "windows":
-		appData := os.Getenv("APPDATA")
-		mediaItems = filepath.Join(appData, "PortForge", "MediaItems")
-		library = filepath.Join(appData, "PortForge", "Library")
+		library = filepath.Join(os.Getenv("APPDATA"), "PortForge", "Library")
 	case "darwin":
-		mediaItems = filepath.Join(home, "Library", "Application Support", "PortForge", "MediaItems")
 		library = filepath.Join(home, "Library", "Application Support", "PortForge", "Library")
 	default:
 		dataHome := os.Getenv("XDG_DATA_HOME")
 		if dataHome == "" {
 			dataHome = filepath.Join(home, ".local", "share")
 		}
-		mediaItems = filepath.Join(dataHome, "PortForge", "MediaItems")
 		library = filepath.Join(dataHome, "PortForge", "Library")
 	}
 	return map[string]string{
-		"mediaItemsPath": mediaItems,
-		"dataPath":       library,
+		"dataPath": library,
 	}
 }
 
@@ -116,10 +116,20 @@ func (a *App) CheckMediaItemsUpdate() (bool, error) {
 	return strings.TrimSpace(string(installed)) != strings.TrimSpace(string(body)), nil
 }
 
-// SyncMediaItems downloads the latest MediaItems from GitHub into a temp
-// directory, then copies all files over destDir with overwrite, leaving any
-// local-only files untouched. Records the commit SHA when done.
-func (a *App) SyncMediaItems(destDir string) error {
+// IsDevMode returns true when the app is running under wails dev, meaning the
+// project-local mediaitems folder is used as the catalog.
+func (a *App) IsDevMode() bool {
+	return devMetadataOverride != ""
+}
+
+// SyncMediaItems downloads the latest MediaItems from GitHub into the catalog
+// directory (config dir / mediaitems), then compares the updated catalog with
+// the user's local library copies and marks any changed items as having updates.
+func (a *App) SyncMediaItems() error {
+	if devMetadataOverride != "" {
+		return fmt.Errorf("sync is disabled in dev mode")
+	}
+	destDir := a.metadataPath
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
@@ -180,6 +190,9 @@ func (a *App) SyncMediaItems(destDir string) error {
 		}
 	}
 
+	// Compare updated catalog against user library copies and flag any changes.
+	a.scanUserLibraryUpdates()
+
 	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "done", "percent": 100})
 	return nil
 }
@@ -201,6 +214,122 @@ func copyDirMerge(src, dst string) error {
 		}
 		return copyFile(path, target)
 	})
+}
+
+// userLibraryPath returns the root of the user's local MediaItem copies.
+func (a *App) userLibraryPath() string {
+	return filepath.Join(a.dataPath, "library")
+}
+
+// copyToUserLibrary copies a MediaItem folder from the catalog into the user's
+// local library, creating the destination tree as needed. Called after install
+// or ROM import so the user has a local snapshot for update comparison.
+func (a *App) copyToUserLibrary(mediaType, itemTitle string) error {
+	src := filepath.Join(a.metadataPath, mediaType, itemTitle)
+	dst := filepath.Join(a.userLibraryPath(), mediaType, itemTitle)
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+	return copyDirMerge(src, dst)
+}
+
+// scanUserLibraryUpdates walks the user library and, for every MediaItem found,
+// compares it file-by-file (SHA-256) with the current catalog. Items that
+// differ are recorded in pendingUpdates so the UI can offer an Update button.
+func (a *App) scanUserLibraryUpdates() {
+	if a.dataPath == "" {
+		return
+	}
+	libraryBase := a.userLibraryPath()
+	updates := map[string]bool{}
+
+	for _, mediaType := range []string{"VideoGameVersion", "VideoGameRom"} {
+		typeDir := filepath.Join(libraryBase, mediaType)
+		entries, err := os.ReadDir(typeDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			itemTitle := e.Name()
+			catalogItem := filepath.Join(a.metadataPath, mediaType, itemTitle)
+			libraryItem := filepath.Join(typeDir, itemTitle)
+			if !mediaItemDirsMatch(catalogItem, libraryItem) {
+				updates[itemTitle] = true
+			}
+		}
+	}
+
+	a.updatesMu.Lock()
+	a.pendingUpdates = updates
+	a.updatesMu.Unlock()
+}
+
+// mediaItemDirsMatch returns true when every file in the catalog directory has
+// a byte-for-byte identical counterpart in the library directory.
+func mediaItemDirsMatch(catalogDir, libraryDir string) bool {
+	match := true
+	_ = filepath.Walk(catalogDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(catalogDir, path)
+		libFile := filepath.Join(libraryDir, rel)
+		if !fileHashesMatch(path, libFile) {
+			match = false
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return match
+}
+
+// fileHashesMatch returns true when both files have the same SHA-256 digest.
+func fileHashesMatch(a, b string) bool {
+	ha, err := fileSHA256(a)
+	if err != nil {
+		return false
+	}
+	hb, err := fileSHA256(b)
+	if err != nil {
+		return false
+	}
+	return ha == hb
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// GetItemUpdate returns true when the catalog version of this item differs from
+// the user's local library copy (i.e. an update is available).
+func (a *App) GetItemUpdate(itemTitle string) bool {
+	a.updatesMu.RLock()
+	defer a.updatesMu.RUnlock()
+	return a.pendingUpdates[itemTitle]
+}
+
+// UpdateMediaItem overwrites the user's local library copy with the current
+// catalog version and clears the pending-update flag for that item.
+func (a *App) UpdateMediaItem(itemTitle string) error {
+	if err := a.copyToUserLibrary("VideoGameVersion", itemTitle); err != nil {
+		return err
+	}
+	a.updatesMu.Lock()
+	delete(a.pendingUpdates, itemTitle)
+	a.updatesMu.Unlock()
+	return nil
 }
 
 // extractZipStrip1 extracts a ZIP archive into destDir, stripping the single
@@ -263,12 +392,16 @@ func extractZipStrip1(src, destDir string) error {
 
 type App struct {
 	ctx          context.Context
-	metadataPath string // library: .mediaitem.json, .install.json, artwork (read-only)
+	metadataPath string // catalog: MediaItem JSON + artwork, stored in config dir (read-only)
 	dataPath     string // user data: ROM files, install dirs, .state.json (writable)
+	redumperPath string // path to the redumper binary (optional)
 
 	installMu     sync.RWMutex
 	installingFor string
 	installCancel context.CancelFunc // non-nil while an install is running
+
+	updatesMu     sync.RWMutex
+	pendingUpdates map[string]bool // itemTitle → update available
 }
 
 // GetActiveInstall returns the item title currently being installed, or "" if idle.
@@ -283,54 +416,36 @@ func NewApp() *App {
 }
 
 type Settings struct {
-	MediaItemsPath string `json:"mediaItemsPath"`
-	DataPath       string `json:"dataPath"`
+	DataPath     string `json:"dataPath"`
+	RedumperPath string `json:"redumperPath,omitempty"`
 }
 
-func settingsFilePath() (string, error) {
+func configDir() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "PortForge", "settings.json"), nil
+	return filepath.Join(dir, "PortForge"), nil
+}
+
+func settingsFilePath() (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "settings.json"), nil
 }
 
 // GetSettings returns the current app settings.
 func (a *App) GetSettings() Settings {
-	return Settings{MediaItemsPath: a.metadataPath, DataPath: a.dataPath}
+	return Settings{
+		DataPath:     a.dataPath,
+		RedumperPath: a.redumperPath,
+	}
 }
 
-// ValidateMediaItemsPath checks both configured paths and returns a human-readable
-// warning if anything is off. Returns an empty string when everything looks fine.
-func (a *App) ValidateMediaItemsPath() string {
-	if a.metadataPath == "" {
-		return "No MediaItems library folder has been selected."
-	}
-	info, err := os.Stat(a.metadataPath)
-	if err != nil || !info.IsDir() {
-		return fmt.Sprintf("The MediaItems library folder does not exist or is not accessible: %s", a.metadataPath)
-	}
-	if _, err := os.Stat(filepath.Join(a.metadataPath, "VideoGameVersion")); os.IsNotExist(err) {
-		return fmt.Sprintf("The library folder does not contain a VideoGameVersion directory. Check that %q is the right folder.", a.metadataPath)
-	}
-	if a.dataPath == "" {
-		return "No user data folder has been selected."
-	}
-	if info, err := os.Stat(a.dataPath); err != nil || !info.IsDir() {
-		return fmt.Sprintf("The user data folder does not exist or is not accessible: %s", a.dataPath)
-	}
-	return ""
-}
-
-// SaveSettings persists both paths and applies them immediately.
-func (a *App) SaveSettings(mediaItemsPath string, dataPath string) error {
-	a.metadataPath = mediaItemsPath
-	a.dataPath = dataPath
-
-	// Ensure both directories exist so the app is usable immediately after setup.
-	_ = os.MkdirAll(mediaItemsPath, 0755)
-	_ = os.MkdirAll(dataPath, 0755)
-
+// persistSettings serialises all current settings to disk.
+func (a *App) persistSettings() error {
 	path, err := settingsFilePath()
 	if err != nil {
 		return err
@@ -338,11 +453,36 @@ func (a *App) SaveSettings(mediaItemsPath string, dataPath string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	data, err := json.Marshal(Settings{MediaItemsPath: mediaItemsPath, DataPath: dataPath})
+	data, err := json.Marshal(Settings{
+		DataPath:     a.dataPath,
+		RedumperPath: a.redumperPath,
+	})
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// ValidateMediaItemsPath checks the configured paths and returns a human-readable
+// warning if anything is off. Returns an empty string when everything looks fine.
+func (a *App) ValidateMediaItemsPath() string {
+	if a.dataPath == "" {
+		return "No user library folder has been selected."
+	}
+	if info, err := os.Stat(a.dataPath); err != nil || !info.IsDir() {
+		return fmt.Sprintf("The user library folder does not exist or is not accessible: %s", a.dataPath)
+	}
+	if _, err := os.Stat(filepath.Join(a.metadataPath, "VideoGameVersion")); os.IsNotExist(err) {
+		return "The MediaItems catalog has not been synced yet. Go to Settings to sync it."
+	}
+	return ""
+}
+
+// SaveSettings persists the user library path and applies it immediately.
+func (a *App) SaveSettings(dataPath string) error {
+	a.dataPath = dataPath
+	_ = os.MkdirAll(dataPath, 0755)
+	return a.persistSettings()
 }
 
 // SelectFolder opens a native folder picker and returns the chosen path.
@@ -352,17 +492,35 @@ func (a *App) SelectFolder() (string, error) {
 	})
 }
 
+// SelectExecutable opens a native file picker filtered to executable files.
+func (a *App) SelectExecutable() (string, error) {
+	return wailsruntime.OpenFileDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Select Executable",
+	})
+}
+
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// In dev mode the project-local mediaitem folder is used; otherwise the
+	// catalog lives in the OS config directory and is never user-configurable.
+	if devMetadataOverride != "" {
+		a.metadataPath = devMetadataOverride
+	} else if dir, err := configDir(); err == nil {
+		a.metadataPath = filepath.Join(dir, "mediaitems")
+		_ = os.MkdirAll(a.metadataPath, 0755)
+	}
+
 	if path, err := settingsFilePath(); err == nil {
 		if data, err := os.ReadFile(path); err == nil {
 			var s Settings
 			if json.Unmarshal(data, &s) == nil {
-				a.metadataPath = s.MediaItemsPath
 				a.dataPath = s.DataPath
+				a.redumperPath = s.RedumperPath
 			}
 		}
 	}
+	a.startDiscWatcher()
 }
 
 // GetPlatform returns the current OS as a platform string matching the schema.
@@ -541,7 +699,13 @@ func (a *App) InstallVersion(itemTitle string, args map[string]string) error {
 	if args == nil {
 		args = map[string]string{}
 	}
-	return a.buildAndInstallSpec(installCtx, version, spec, args, versionDir)
+	if err := a.buildAndInstallSpec(installCtx, version, spec, args, versionDir); err != nil {
+		return err
+	}
+	// Snapshot the catalog MediaItem into the user library so we can detect
+	// future updates by comparing the two copies.
+	_ = a.copyToUserLibrary("VideoGameVersion", itemTitle)
+	return nil
 }
 
 // findMatchingSpec returns the first spec in the array whose targetPlatforms includes
@@ -1043,6 +1207,7 @@ func (a *App) ImportROMs(matches []models.ROMFileMatch, move bool) error {
 				return fmt.Errorf("failed to copy %s: %w", m.FileName, err)
 			}
 		}
+		_ = a.copyToUserLibrary("VideoGameRom", m.ROMTitle)
 	}
 	return nil
 }

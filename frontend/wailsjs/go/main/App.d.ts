@@ -5,6 +5,8 @@ import {main} from '../models';
 
 export function AddROMFiles(arg1:string,arg2:Array<string>,arg3:boolean):Promise<Array<string>>;
 
+export function CancelDump():Promise<void>;
+
 export function CancelInstall():Promise<void>;
 
 export function CheckMediaItemsUpdate():Promise<boolean>;
@@ -21,13 +23,19 @@ export function GetInstallPrompts(arg1:string):Promise<Array<models.ArgPrompt>>;
 
 export function GetInstallState(arg1:string):Promise<models.InstallState>;
 
+export function GetItemUpdate(arg1:string):Promise<boolean>;
+
 export function GetMediaItemsSHA():Promise<string>;
+
+export function GetOpticalDrives():Promise<Array<models.OpticalDrive>>;
 
 export function GetPlatform():Promise<string>;
 
 export function GetPlatformAvailable(arg1:string):Promise<boolean>;
 
 export function GetROMStatus(arg1:string):Promise<Record<string, boolean>>;
+
+export function GetRedumperPath():Promise<string>;
 
 export function GetRomLibraryStatus():Promise<Record<string, boolean>>;
 
@@ -41,16 +49,28 @@ export function ImportROMs(arg1:Array<models.ROMFileMatch>,arg2:boolean):Promise
 
 export function InstallVersion(arg1:string,arg2:Record<string, string>):Promise<void>;
 
+export function IsDevMode():Promise<boolean>;
+
 export function LaunchVersion(arg1:string,arg2:string):Promise<void>;
 
 export function MatchDroppedROMs(arg1:Array<string>):Promise<models.ROMDropSummary>;
 
-export function SaveSettings(arg1:string,arg2:string):Promise<void>;
+export function SaveSettings(arg1:string):Promise<void>;
+
+export function ScanDiscs():Promise<Array<models.OpticalDrive>>;
+
+export function SelectExecutable():Promise<string>;
 
 export function SelectFolder():Promise<string>;
 
-export function SyncMediaItems(arg1:string):Promise<void>;
+export function SetRedumperPath(arg1:string):Promise<void>;
+
+export function StartDump(arg1:string,arg2:string):Promise<void>;
+
+export function SyncMediaItems():Promise<void>;
 
 export function UninstallVersion(arg1:string):Promise<void>;
+
+export function UpdateMediaItem(arg1:string):Promise<void>;
 
 export function ValidateMediaItemsPath():Promise<string>;

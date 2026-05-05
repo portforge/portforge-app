@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"net/http"
+	"runtime"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -14,6 +15,13 @@ var assets embed.FS
 
 func main() {
 	app := NewApp()
+
+	// On Linux, gtk_drag_dest_unset (triggered by DisableWebViewDrop:true) removes
+	// WebKitGTK's DnD target registration and prevents the drag-data-received /
+	// drag-drop GTK signals from firing, breaking file drop entirely. On macOS the
+	// native performDragOperation always runs before any DOM event, so we must keep
+	// DisableWebViewDrop:true there to stop WKWebView from navigating to the file.
+	disableWebViewDrop := runtime.GOOS != "linux"
 
 	err := wails.Run(&options.App{
 		Title:  "PortForge",
@@ -34,7 +42,7 @@ func main() {
 		EnableDefaultContextMenu: false,
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,
-			DisableWebViewDrop: true,
+			DisableWebViewDrop: disableWebViewDrop,
 		},
 		Bind: []interface{}{
 			app,

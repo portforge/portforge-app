@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 const props = defineProps({
-  roms: { type: Array, required: true },
+  roms:   { type: Array,  required: true },
   status: { type: Object, required: true },
 })
 
@@ -14,17 +14,11 @@ const sortedRoms = computed(() =>
   })
 )
 
-const enc = encodeURIComponent
-
-function romArtUrl(rom) {
-  return `/mediaitems/VideoGameRom/${enc(rom._itemTitle)}/.artwork/`
-}
-
 function formatSize(bytes) {
   if (!bytes) return '—'
   if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB'
-  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB'
-  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes >= 1048576)    return (bytes / 1048576).toFixed(1) + ' MB'
+  if (bytes >= 1024)       return (bytes / 1024).toFixed(1) + ' KB'
   return bytes + ' B'
 }
 </script>
@@ -39,9 +33,7 @@ function formatSize(bytes) {
           class="rom-status-indicator"
           :class="status[rom._itemTitle] ? 'have' : 'missing'"
           :title="status[rom._itemTitle] ? 'ROM file present' : 'ROM file missing'"
-        >
-          {{ status[rom._itemTitle] ? '✓' : '✗' }}
-        </div>
+        >{{ status[rom._itemTitle] ? '✓' : '✗' }}</div>
 
         <div class="rom-info">
           <span class="rom-title">{{ rom.title || rom._itemTitle }}</span>
@@ -107,7 +99,6 @@ function formatSize(bytes) {
     color: #50c878;
     border: 1px solid rgba(80, 200, 120, 0.4);
   }
-
   &.missing {
     background: rgba(224, 108, 117, 0.15);
     color: #e06c75;

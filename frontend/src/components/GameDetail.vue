@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, inject, watch } from 'vue'
 import { marked } from 'marked'
-import { GetROMStatus, GetInstallState, GetInstallPrompts, GetPlatformAvailable, LaunchVersion, CleanBuildDir, UninstallVersion } from '../../wailsjs/go/main/App'
+import { GetROMStatus, GetInstallState, GetInstallPrompts, GetPlatformAvailable, LaunchVersion, CleanBuildDir, UninstallVersion, GetItemUpdate, UpdateMediaItem } from '../../wailsjs/go/main/App'
 
 
 const props = defineProps({
@@ -19,6 +19,7 @@ const cancelInstall = inject('cancelInstall')
 
 const romStatus = ref({})
 const installState = ref(null)
+const updateAvailable = ref(false)
 const platformAvailable = ref(false)
 const installError = ref(null)
 const showExeMenu = ref(false)
@@ -93,14 +94,16 @@ const extraExecutables = computed(() =>
 )
 
 async function loadState() {
-  const [romResult, stateResult, promptResult, availResult] = await Promise.allSettled([
+  const [romResult, stateResult, promptResult, availResult, updateResult] = await Promise.allSettled([
     GetROMStatus(props.game._itemTitle),
     GetInstallState(props.game._itemTitle),
     GetInstallPrompts(props.game._itemTitle),
     GetPlatformAvailable(props.game._itemTitle),
+    GetItemUpdate(props.game._itemTitle),
   ])
   romStatus.value = romResult.status === 'fulfilled' ? romResult.value : {}
   installState.value = stateResult.status === 'fulfilled' ? stateResult.value : null
+  updateAvailable.value = updateResult.status === 'fulfilled' ? updateResult.value : false
   installPrompts.value = (promptResult.status === 'fulfilled' ? promptResult.value : null) ?? []
   platformAvailable.value = availResult.status === 'fulfilled' ? availResult.value : false
 
@@ -158,6 +161,16 @@ async function uninstall() {
   try {
     await UninstallVersion(props.game._itemTitle)
     installState.value = await GetInstallState(props.game._itemTitle)
+  } catch (e) {
+    installError.value = String(e)
+  }
+}
+
+async function update() {
+  installError.value = null
+  try {
+    await UpdateMediaItem(props.game._itemTitle)
+    updateAvailable.value = false
   } catch (e) {
     installError.value = String(e)
   }
@@ -232,34 +245,35 @@ function artworkUrl(type) {
 
             <!-- Split play button + uninstall -->
             <div v-else-if="installState?.installed" class="installed-actions">
-            <div class="btn-play-group">
-              <button
-                class="btn-play"
-                @click="launch(primaryExecutable?.path ?? '')"
-              >{{ primaryExecutable?.title ?? 'Play' }}</button>
-              <button
-                v-if="extraExecutables.length"
-                class="btn-play-arrow"
-                @click="showExeMenu = !showExeMenu"
-                title="More executables"
-              >&#9660;</button>
-              <div v-if="showExeMenu" class="exe-menu">
+              <div class="btn-play-group">
                 <button
-                  v-for="exe in extraExecutables"
-                  :key="exe.path"
-                  class="exe-menu-item"
-                  @click="launch(exe.path)"
-                >{{ exe.title || exe.path }}</button>
+                  class="btn-play"
+                  @click="launch(primaryExecutable?.path ?? '')"
+                >{{ primaryExecutable?.title ?? 'Play' }}</button>
+                <button
+                  v-if="extraExecutables.length"
+                  class="btn-play-arrow"
+                  @click="showExeMenu = !showExeMenu"
+                  title="More executables"
+                >&#9660;</button>
+                <div v-if="showExeMenu" class="exe-menu">
+                  <button
+                    v-for="exe in extraExecutables"
+                    :key="exe.path"
+                    class="exe-menu-item"
+                    @click="launch(exe.path)"
+                  >{{ exe.title || exe.path }}</button>
+                </div>
               </div>
-            </div>
-            <button v-if="!confirmUninstall" class="btn-uninstall" @click="confirmUninstall = true">Uninstall</button>
-            <div v-else class="uninstall-confirm">
-              <span class="uninstall-confirm-label">Remove all installed files?</span>
-              <div class="uninstall-confirm-btns">
-                <button class="btn-danger" @click="uninstall">Yes, uninstall</button>
-                <button class="btn-ghost-sm" @click="confirmUninstall = false">Cancel</button>
+              <button v-if="updateAvailable" class="btn-update" @click="update">Update</button>
+              <button v-if="!confirmUninstall" class="btn-uninstall" @click="confirmUninstall = true">Uninstall</button>
+              <div v-else class="uninstall-confirm">
+                <span class="uninstall-confirm-label">Remove all installed files?</span>
+                <div class="uninstall-confirm-btns">
+                  <button class="btn-danger" @click="uninstall">Yes, uninstall</button>
+                  <button class="btn-ghost-sm" @click="confirmUninstall = false">Cancel</button>
+                </div>
               </div>
-            </div>
             </div>
 
             <div v-else-if="isInstalling" class="install-progress">
@@ -561,6 +575,19 @@ function artworkUrl(type) {
   flex-direction: column;
   gap: 10px;
   align-items: flex-start;
+}
+
+.btn-update {
+  background: none;
+  color: #50c878;
+  border: 1px solid rgba(80, 200, 120, 0.4);
+  border-radius: 4px;
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+
+  &:hover { background: rgba(80, 200, 120, 0.08); border-color: rgba(80, 200, 120, 0.7); }
 }
 
 .btn-uninstall {

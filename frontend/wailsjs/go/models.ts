@@ -1,8 +1,8 @@
 export namespace main {
 	
 	export class Settings {
-	    mediaItemsPath: string;
 	    dataPath: string;
+	    redumperPath?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -10,8 +10,8 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.mediaItemsPath = source["mediaItemsPath"];
 	        this.dataPath = source["dataPath"];
+	        this.redumperPath = source["redumperPath"];
 	    }
 	}
 
@@ -257,6 +257,26 @@ export namespace models {
 	        this.title = source["title"];
 	        this.modType = source["modType"];
 	        this.description = source["description"];
+	    }
+	}
+	export class OpticalDrive {
+	    path: string;
+	    rawPath: string;
+	    label: string;
+	    hasDisc: boolean;
+	    mountPoint: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new OpticalDrive(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.rawPath = source["rawPath"];
+	        this.label = source["label"];
+	        this.hasDisc = source["hasDisc"];
+	        this.mountPoint = source["mountPoint"];
 	    }
 	}
 	export class ParentItemType {

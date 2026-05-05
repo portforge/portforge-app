@@ -3,7 +3,7 @@ import { ref, onMounted } from 'vue'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 import {
   GetSettings, SaveSettings, SelectFolder, ValidateMediaItemsPath,
-  GetDefaultPaths, GetMediaItemsSHA, CheckMediaItemsUpdate, SyncMediaItems,
+  GetDefaultPaths, GetMediaItemsSHA, CheckMediaItemsUpdate, SyncMediaItems, IsDevMode,
 } from '../../wailsjs/go/main/App'
 
 const emit = defineEmits(['saved'])
@@ -13,10 +13,10 @@ const props = defineProps({
   setup: { type: Boolean, default: false },
 })
 
-const libraryPath = ref('')
 const dataPath = ref('')
 const saving = ref(false)
 const error = ref(null)
+const devMode = ref(false)
 
 const installedSHA = ref('')
 const updateAvailable = ref(false)
@@ -30,9 +30,9 @@ onMounted(async () => {
     GetSettings().catch(() => null),
     GetDefaultPaths().catch(() => ({})),
   ])
-  libraryPath.value = settings?.mediaItemsPath || defaults.mediaItemsPath || ''
-  dataPath.value    = settings?.dataPath       || defaults.dataPath       || ''
-  installedSHA.value = await GetMediaItemsSHA().catch(() => '')
+  dataPath.value = settings?.dataPath || defaults.dataPath || ''
+  devMode.value = await IsDevMode().catch(() => false)
+  installedSHA.value = devMode.value ? '' : await GetMediaItemsSHA().catch(() => '')
 
   EventsOn('mediaitems:progress', ({ phase, percent }) => {
     downloadPhase.value   = phase
@@ -43,11 +43,6 @@ onMounted(async () => {
 
 function beforeUnmount() {
   EventsOff('mediaitems:progress')
-}
-
-async function browseLibrary() {
-  const chosen = await SelectFolder()
-  if (chosen) { libraryPath.value = chosen; await save() }
 }
 
 async function browseData() {
@@ -68,16 +63,12 @@ async function checkUpdate() {
 }
 
 async function syncMediaItems() {
-  if (!libraryPath.value) {
-    error.value = 'Set the MediaItems library folder path first.'
-    return
-  }
   downloading.value = true
   downloadPhase.value = 'downloading'
   downloadPercent.value = 0
   error.value = null
   try {
-    await SyncMediaItems(libraryPath.value)
+    await SyncMediaItems()
     installedSHA.value = await GetMediaItemsSHA()
     updateAvailable.value = false
   } catch (e) {
@@ -87,11 +78,11 @@ async function syncMediaItems() {
 }
 
 async function save() {
-  if (!libraryPath.value || !dataPath.value) return
+  if (!dataPath.value) return
   saving.value = true
   error.value = null
   try {
-    await SaveSettings(libraryPath.value, dataPath.value)
+    await SaveSettings(dataPath.value)
     const warning = await ValidateMediaItemsPath()
     if (warning) {
       error.value = warning
@@ -111,45 +102,45 @@ async function save() {
     <div class="settings-content">
       <template v-if="setup">
         <h1 class="setup-title">Welcome to PortForge</h1>
-        <p class="setup-subtitle">Confirm where your MediaItems library and user library are stored, then click Get Started.</p>
+        <p class="setup-subtitle">Choose where your user library is stored, then click Get Started. You can sync the MediaItems catalog from the Settings page after setup.</p>
       </template>
       <template v-else>
         <h2 class="settings-heading">Settings</h2>
       </template>
 
-      <!-- MediaItems library folder -->
+      <!-- MediaItems catalog (auto-managed, read-only display) -->
       <div class="field-group">
-        <label class="field-label">MediaItems library folder</label>
-        <p class="field-hint">Read-only. Contains game metadata, artwork, and install specs.</p>
-        <div class="path-row">
-          <input class="path-input" v-model="libraryPath" placeholder="No folder selected" spellcheck="false" />
-          <button class="btn-browse" @click="browseLibrary">Browse…</button>
-        </div>
+        <label class="field-label">MediaItems catalog</label>
+        <p class="field-hint">Managed by PortForge. Contains game metadata, artwork, and install specs.</p>
 
-        <!-- Download / update controls -->
-        <div v-if="downloading" class="mediaitems-status">
-          <div class="progress-bar">
-            <div class="progress-fill" :style="{ width: downloadPercent + '%' }" />
+        <div v-if="devMode" class="mediaitems-controls">
+          <span class="status-label muted">Using local mediaitems folder (dev mode)</span>
+        </div>
+        <template v-else>
+          <div v-if="downloading" class="mediaitems-status">
+            <div class="progress-bar">
+              <div class="progress-fill" :style="{ width: downloadPercent + '%' }" />
+            </div>
+            <span class="status-label">{{
+              downloadPhase === 'extracting' ? 'Extracting…' :
+              downloadPhase === 'copying'    ? 'Copying…' :
+              `Downloading… ${downloadPercent}%`
+            }}</span>
           </div>
-          <span class="status-label">{{
-            downloadPhase === 'extracting' ? 'Extracting…' :
-            downloadPhase === 'copying'    ? 'Copying…' :
-            `Downloading… ${downloadPercent}%`
-          }}</span>
-        </div>
-        <div v-else class="mediaitems-controls">
-          <span v-if="installedSHA === 'unknown'" class="status-label muted">Version unknown</span>
-          <span v-else-if="installedSHA" class="sha-badge">{{ installedSHA }}</span>
-          <span v-else class="status-label muted">Not synced</span>
-          <button class="btn-action" @click="syncMediaItems">Sync</button>
-          <template v-if="installedSHA && installedSHA !== 'unknown'">
-            <button class="btn-action" :disabled="checkingUpdate" @click="checkUpdate">
-              {{ checkingUpdate ? 'Checking…' : 'Check for updates' }}
-            </button>
-            <span v-if="updateAvailable === true" class="update-badge">Update available</span>
-            <span v-else-if="updateAvailable === false && !checkingUpdate" class="status-label muted">Up to date</span>
-          </template>
-        </div>
+          <div v-else class="mediaitems-controls">
+            <span v-if="installedSHA === 'unknown'" class="status-label muted">Version unknown</span>
+            <span v-else-if="installedSHA" class="sha-badge">{{ installedSHA }}</span>
+            <span v-else class="status-label muted">Not synced</span>
+            <button class="btn-action" @click="syncMediaItems">Sync</button>
+            <template v-if="installedSHA && installedSHA !== 'unknown'">
+              <button class="btn-action" :disabled="checkingUpdate" @click="checkUpdate">
+                {{ checkingUpdate ? 'Checking…' : 'Check for updates' }}
+              </button>
+              <span v-if="updateAvailable === true" class="update-badge">Update available</span>
+              <span v-else-if="updateAvailable === false && !checkingUpdate" class="status-label muted">Up to date</span>
+            </template>
+          </div>
+        </template>
       </div>
 
       <!-- User library folder -->
@@ -166,7 +157,7 @@ async function save() {
 
       <button
         class="btn-save"
-        :disabled="!libraryPath || !dataPath || saving"
+        :disabled="!dataPath || saving"
         @click="save"
       >{{ setup ? 'Get Started' : 'Save' }}</button>
     </div>

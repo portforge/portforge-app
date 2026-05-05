@@ -5,6 +5,7 @@ import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import GameLibrary from './components/GameLibrary.vue'
 import GameDetail from './components/GameDetail.vue'
 import RomLibrary from './components/RomLibrary.vue'
+import DiscDumper from './components/DiscDumper.vue'
 import Settings from './components/Settings.vue'
 
 const versions = ref([])
@@ -124,7 +125,7 @@ async function onSettingsSaved() {
 
 onMounted(async () => {
   const settings = await GetSettings()
-  if (!settings.mediaItemsPath || !settings.dataPath) {
+  if (!settings.dataPath) {
     needsSetup.value = true
     return
   }
@@ -250,6 +251,11 @@ function dismissDrop() {
         >ROMs</button>
         <button
           class="tab-btn"
+          :class="{ active: activeTab === 'dump' }"
+          @click="activeTab = 'dump'"
+        >Dump</button>
+        <button
+          class="tab-btn"
           :class="{ active: activeTab === 'settings' }"
           @click="activeTab = 'settings'"
         >Settings</button>
@@ -326,6 +332,9 @@ function dismissDrop() {
           <Settings
             v-else-if="activeTab === 'settings'"
             @saved="onSettingsSaved"
+          />
+          <DiscDumper
+            v-else-if="activeTab === 'dump'"
           />
           <RomLibrary
             v-else-if="activeTab === 'roms'"
