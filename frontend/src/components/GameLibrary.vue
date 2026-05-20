@@ -79,8 +79,8 @@ function bannerUrl(version) {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  align-content: center;
-  gap: 12px;
+  // align-content: center;
+  gap: 8px;
 }
 
 .port-card {
@@ -88,7 +88,7 @@ function bannerUrl(version) {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 8px 14px;
+  padding: 8px;
   background: #32323280;
   border: 1px solid #4c4c4c;
   border-radius: 8px;

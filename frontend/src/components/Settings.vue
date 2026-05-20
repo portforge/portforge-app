@@ -3,10 +3,11 @@ import { ref, onMounted } from 'vue'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 import {
   GetSettings, SaveSettings, SelectFolder, ValidateMediaItemsPath,
-  GetDefaultPaths, GetMediaItemsSHA, CheckMediaItemsUpdate, SyncMediaItems, IsDevMode,
+  GetDefaultPaths, GetMediaItemsSHA, CheckMediaItemsUpdate, SyncMediaItems,
+  IsDevMode, RefreshLibraryIndex,
 } from '../../wailsjs/go/main/App'
 
-const emit = defineEmits(['saved'])
+const emit = defineEmits(['saved', 'refreshed'])
 
 const props = defineProps({
   /** If true, renders the full-screen first-run setup layout instead of the settings panel */
@@ -17,6 +18,8 @@ const dataPath = ref('')
 const saving = ref(false)
 const error = ref(null)
 const devMode = ref(false)
+
+const refreshing = ref(false)
 
 const installedSHA = ref('')
 const updateAvailable = ref(false)
@@ -59,6 +62,19 @@ async function checkUpdate() {
     error.value = String(e)
   } finally {
     checkingUpdate.value = false
+  }
+}
+
+async function refreshIndex() {
+  refreshing.value = true
+  error.value = null
+  try {
+    await RefreshLibraryIndex()
+    emit('refreshed')
+  } catch (e) {
+    error.value = String(e)
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -141,6 +157,11 @@ async function save() {
             </template>
           </div>
         </template>
+        <div class="mediaitems-controls">
+          <button class="btn-action" :disabled="refreshing" @click="refreshIndex">
+            {{ refreshing ? 'Refreshing…' : 'Refresh index' }}
+          </button>
+        </div>
       </div>
 
       <!-- User library folder -->

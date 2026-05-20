@@ -82,6 +82,10 @@ export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
 
+export function GetVersion(arg1) {
+  return window['go']['main']['App']['GetVersion'](arg1);
+}
+
 export function GetVersions() {
   return window['go']['main']['App']['GetVersions']();
 }
@@ -104,6 +108,10 @@ export function LaunchVersion(arg1, arg2) {
 
 export function MatchDroppedROMs(arg1) {
   return window['go']['main']['App']['MatchDroppedROMs'](arg1);
+}
+
+export function RefreshLibraryIndex() {
+  return window['go']['main']['App']['RefreshLibraryIndex']();
 }
 
 export function SaveSettings(arg1) {

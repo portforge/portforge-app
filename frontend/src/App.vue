@@ -1,12 +1,14 @@
 <script setup>
 import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
-import { GetVersions, GetPlatform, GetRoms, GetRomLibraryStatus, GetActiveInstall, InstallVersion, CancelInstall, GetSettings, ValidateMediaItemsPath, MatchDroppedROMs, ImportROMs } from '../wailsjs/go/main/App'
+import { GetVersions, GetVersion, GetPlatform, GetRoms, GetRomLibraryStatus, GetActiveInstall, InstallVersion, CancelInstall, GetSettings, ValidateMediaItemsPath, MatchDroppedROMs, ImportROMs } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import GameLibrary from './components/GameLibrary.vue'
 import GameDetail from './components/GameDetail.vue'
 import RomLibrary from './components/RomLibrary.vue'
 import DiscDumper from './components/DiscDumper.vue'
 import Settings from './components/Settings.vue'
+
+const isDev = import.meta.env.DEV
 
 const versions = ref([])
 const selectedGame = ref(null)
@@ -250,6 +252,7 @@ function dismissDrop() {
           @click="activeTab = 'roms'"
         >ROMs</button>
         <button
+          v-if="isDev"
           class="tab-btn"
           :class="{ active: activeTab === 'dump' }"
           @click="activeTab = 'dump'"
@@ -292,8 +295,8 @@ function dismissDrop() {
         <button class="btn-ghost" @click="dropError = null">✕</button>
       </div>
 
-      <div v-if="showInstallBanner" class="install-banner" @click.self="selectedGame = versions.find(v => v._itemTitle === activeInstall.itemTitle) ?? null">
-        <div class="install-banner-text" style="cursor:pointer" @click="selectedGame = versions.find(v => v._itemTitle === activeInstall.itemTitle) ?? null">
+      <div v-if="showInstallBanner" class="install-banner" @click.self="GetVersion(activeInstall.itemTitle).then(full => { selectedGame = full }).catch(() => {})">
+        <div class="install-banner-text" style="cursor:pointer" @click="GetVersion(activeInstall.itemTitle).then(full => { selectedGame = full }).catch(() => {})">
           <span class="install-banner-title">Installing {{ activeInstall.failed ? '— failed' : '' }}</span>
           <span class="install-banner-label">{{ activeInstall.failed ? activeInstall.failed.error : installBannerLabel }}</span>
         </div>
@@ -320,7 +323,7 @@ function dismissDrop() {
       </div>
 
       <main>
-        <Settings v-if="needsSetup" :setup="true" @saved="onSettingsSaved" />
+        <Settings v-if="needsSetup" :setup="true" @saved="onSettingsSaved" @refreshed="loadLibrary" />
         <template v-else>
           <div v-if="error" class="error">{{ error }}</div>
           <GameDetail
@@ -331,10 +334,10 @@ function dismissDrop() {
           />
           <Settings
             v-else-if="activeTab === 'settings'"
-            @saved="onSettingsSaved"
+            @saved="onSettingsSaved" @refreshed="loadLibrary"
           />
           <DiscDumper
-            v-else-if="activeTab === 'dump'"
+            v-else-if="isDev && activeTab === 'dump'"
           />
           <RomLibrary
             v-else-if="activeTab === 'roms'"
@@ -344,7 +347,7 @@ function dismissDrop() {
           <GameLibrary
             v-else
             :versions="versions"
-            @select="selectedGame = $event"
+            @select="v => GetVersion(v._itemTitle).then(full => { selectedGame = full ?? v }).catch(() => { selectedGame = v })"
           />
         </template>
       </main>
@@ -433,9 +436,10 @@ header {
 
 /* ── Content area ── */
 .content-area {
-  flex: 1;
+  /* flex: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: column; */
+  display: block;
   overflow: hidden;
   position: relative;
 }
@@ -443,6 +447,7 @@ header {
 main {
   flex: 1;
   overflow-y: auto;
+  height: 100%;
 }
 
 /* ── Drop overlay ── */

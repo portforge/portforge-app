@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/md5"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,11 +15,12 @@ import (
 	"path/filepath"
 	"portforge/metadata"
 	"portforge/models"
+	"portforge/store"
 	"regexp"
 	"runtime"
 	"sort"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -122,6 +122,23 @@ func (a *App) IsDevMode() bool {
 	return devMetadataOverride != ""
 }
 
+// RefreshLibraryIndex rebuilds the SQLite index from the current catalog on
+// disk and resyncs user ROM presence. Useful in dev mode after adding new
+// MediaItem JSON files without running a full sync.
+func (a *App) RefreshLibraryIndex() error {
+	if a.store == nil {
+		return fmt.Errorf("store not initialised")
+	}
+	if err := a.store.RebuildCatalog(a.metadataPath); err != nil {
+		return err
+	}
+	if a.dataPath != "" {
+		_ = a.store.SyncUserROMs(a.dataPath)
+		_ = a.store.ScanUserLibraryUpdates(a.metadataPath, a.dataPath)
+	}
+	return nil
+}
+
 // SyncMediaItems downloads the latest MediaItems from GitHub into the catalog
 // directory (config dir / mediaitems), then compares the updated catalog with
 // the user's local library copies and marks any changed items as having updates.
@@ -190,8 +207,15 @@ func (a *App) SyncMediaItems() error {
 		}
 	}
 
-	// Compare updated catalog against user library copies and flag any changes.
-	a.scanUserLibraryUpdates()
+	// Rebuild the DB index from the updated catalog, then resync user ROMs and
+	// update-flags so the UI reflects the new catalog state immediately.
+	if a.store != nil {
+		_ = a.store.RebuildCatalog(destDir)
+		if a.dataPath != "" {
+			_ = a.store.SyncUserROMs(a.dataPath)
+			_ = a.store.ScanUserLibraryUpdates(destDir, a.dataPath)
+		}
+	}
 
 	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "done", "percent": 100})
 	return nil
@@ -203,6 +227,13 @@ func copyDirMerge(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		// filepath.Walk uses os.Lstat, so symlinks appear here with
+		// ModeSymlink set rather than being followed. Skip them: the
+		// subsequent copyFile call uses os.Open which would follow the
+		// symlink and potentially read content outside the source tree.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
 		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
@@ -233,91 +264,14 @@ func (a *App) copyToUserLibrary(mediaType, itemTitle string) error {
 	return copyDirMerge(src, dst)
 }
 
-// scanUserLibraryUpdates walks the user library and, for every MediaItem found,
-// compares it file-by-file (SHA-256) with the current catalog. Items that
-// differ are recorded in pendingUpdates so the UI can offer an Update button.
-func (a *App) scanUserLibraryUpdates() {
-	if a.dataPath == "" {
-		return
-	}
-	libraryBase := a.userLibraryPath()
-	updates := map[string]bool{}
-
-	for _, mediaType := range []string{"VideoGameVersion", "VideoGameRom"} {
-		typeDir := filepath.Join(libraryBase, mediaType)
-		entries, err := os.ReadDir(typeDir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			itemTitle := e.Name()
-			catalogItem := filepath.Join(a.metadataPath, mediaType, itemTitle)
-			libraryItem := filepath.Join(typeDir, itemTitle)
-			if !mediaItemDirsMatch(catalogItem, libraryItem) {
-				updates[itemTitle] = true
-			}
-		}
-	}
-
-	a.updatesMu.Lock()
-	a.pendingUpdates = updates
-	a.updatesMu.Unlock()
-}
-
-// mediaItemDirsMatch returns true when every file in the catalog directory has
-// a byte-for-byte identical counterpart in the library directory.
-func mediaItemDirsMatch(catalogDir, libraryDir string) bool {
-	match := true
-	_ = filepath.Walk(catalogDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-		rel, _ := filepath.Rel(catalogDir, path)
-		libFile := filepath.Join(libraryDir, rel)
-		if !fileHashesMatch(path, libFile) {
-			match = false
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	return match
-}
-
-// fileHashesMatch returns true when both files have the same SHA-256 digest.
-func fileHashesMatch(a, b string) bool {
-	ha, err := fileSHA256(a)
-	if err != nil {
-		return false
-	}
-	hb, err := fileSHA256(b)
-	if err != nil {
-		return false
-	}
-	return ha == hb
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
 
 // GetItemUpdate returns true when the catalog version of this item differs from
 // the user's local library copy (i.e. an update is available).
 func (a *App) GetItemUpdate(itemTitle string) bool {
-	a.updatesMu.RLock()
-	defer a.updatesMu.RUnlock()
-	return a.pendingUpdates[itemTitle]
+	if a.store == nil {
+		return false
+	}
+	return a.store.GetItemUpdate(itemTitle)
 }
 
 // UpdateMediaItem overwrites the user's local library copy with the current
@@ -326,9 +280,9 @@ func (a *App) UpdateMediaItem(itemTitle string) error {
 	if err := a.copyToUserLibrary("VideoGameVersion", itemTitle); err != nil {
 		return err
 	}
-	a.updatesMu.Lock()
-	delete(a.pendingUpdates, itemTitle)
-	a.updatesMu.Unlock()
+	if a.store != nil {
+		_ = a.store.SetItemUpdate(itemTitle, false)
+	}
 	return nil
 }
 
@@ -351,17 +305,36 @@ func extractZipStrip1(src, destDir string) error {
 	}
 
 	destDir = filepath.Clean(destDir)
+	// Pre-compute the canonical prefix used for containment checks below.
+	// We append the separator so that a destDir of "/foo/bar" cannot be
+	// confused with "/foo/barbaz".
+	destDirSlash := destDir + string(os.PathSeparator)
+
 	for _, f := range r.File {
+		// Skip symlink entries: on some ZIP implementations the symlink
+		// target is stored as the file body. Extracting symlinks could
+		// allow a malicious archive to point outside the destination tree
+		// and affect subsequent file operations.
+		if f.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+
 		name := filepath.ToSlash(f.Name)
 		name = strings.TrimPrefix(name, prefix)
 		if name == "" {
 			continue
 		}
 		destPath := filepath.Join(destDir, filepath.FromSlash(name))
-		rel, err := filepath.Rel(destDir, destPath)
-		if err != nil || strings.HasPrefix(rel, "..") {
+
+		// Guard against path traversal using a HasPrefix check on the
+		// cleaned path. filepath.Rel is not used here because on Windows
+		// it can return non-".." results for paths on different drives
+		// that still escape the destination directory.
+		clean := filepath.Clean(destPath)
+		if clean != destDir && !strings.HasPrefix(clean, destDirSlash) {
 			return fmt.Errorf("invalid path in zip: %s", f.Name)
 		}
+
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(destPath, 0755); err != nil {
 				return err
@@ -395,13 +368,11 @@ type App struct {
 	metadataPath string // catalog: MediaItem JSON + artwork, stored in config dir (read-only)
 	dataPath     string // user data: ROM files, install dirs, .state.json (writable)
 	redumperPath string // path to the redumper binary (optional)
+	store        *store.Store
 
 	installMu     sync.RWMutex
 	installingFor string
 	installCancel context.CancelFunc // non-nil while an install is running
-
-	updatesMu     sync.RWMutex
-	pendingUpdates map[string]bool // itemTitle → update available
 }
 
 // GetActiveInstall returns the item title currently being installed, or "" if idle.
@@ -520,6 +491,22 @@ func (a *App) startup(ctx context.Context) {
 			}
 		}
 	}
+
+	// Open the library index database. On first run (empty DB) rebuild from the
+	// catalog, then index any ROM files already in the user library.
+	if dir, err := configDir(); err == nil {
+		if st, err := store.Open(filepath.Join(dir, "library.db")); err == nil {
+			a.store = st
+			if st.IsEmpty() && a.metadataPath != "" {
+				_ = st.RebuildCatalog(a.metadataPath)
+			}
+			if a.dataPath != "" {
+				_ = st.SyncUserROMs(a.dataPath)
+				_ = st.ScanUserLibraryUpdates(a.metadataPath, a.dataPath)
+			}
+		}
+	}
+
 	a.startDiscWatcher()
 }
 
@@ -541,17 +528,32 @@ func (a *App) GetGames() ([]models.VideoGame, error) {
 }
 
 // GetVersions returns all VideoGameVersion items from the local mediaitems directory.
+// GetVersion loads the full VideoGameVersion JSON for a given item title.
+// Used by the detail page, which needs fields not stored in the DB index.
+func (a *App) GetVersion(itemTitle string) (*models.VideoGameVersion, error) {
+	return metadata.LoadOneVersion(a.metadataPath, itemTitle)
+}
+
 func (a *App) GetVersions() ([]models.VideoGameVersion, error) {
+	if a.store != nil {
+		return a.store.GetVersions()
+	}
 	return metadata.LoadAllVersions(a.metadataPath)
 }
 
-// GetRoms returns all VideoGameRom items from the local mediaitems directory.
+// GetRoms returns all VideoGameRom items with display-level format info.
 func (a *App) GetRoms() ([]models.VideoGameRom, error) {
+	if a.store != nil {
+		return a.store.GetRoms()
+	}
 	return metadata.LoadAllRoms(a.metadataPath)
 }
 
-// GetRomLibraryStatus returns a map of ROM itemTitle → whether a file is present.
+// GetRomLibraryStatus returns a map of ROM itemTitle → whether any file is present.
 func (a *App) GetRomLibraryStatus() (map[string]bool, error) {
+	if a.store != nil {
+		return a.store.GetRomLibraryStatus()
+	}
 	roms, err := metadata.LoadAllRoms(a.metadataPath)
 	if err != nil {
 		return nil, err
@@ -599,7 +601,12 @@ func (a *App) GetInstallPrompts(itemTitle string) ([]models.ArgPrompt, error) {
 		return nil, nil
 	}
 
-	romHashes, _ := metadata.ScanROMLibrary(a.dataPath)
+	var romHashes map[string]string
+	if a.store != nil {
+		romHashes, _ = a.store.GetROMLocalPaths()
+	} else {
+		romHashes, _ = metadata.ScanROMLibrary(a.dataPath)
+	}
 
 	// Build title → present map from romDependencies
 	romPresent := make(map[string]bool)
@@ -705,6 +712,10 @@ func (a *App) InstallVersion(itemTitle string, args map[string]string) error {
 	// Snapshot the catalog MediaItem into the user library so we can detect
 	// future updates by comparing the two copies.
 	_ = a.copyToUserLibrary("VideoGameVersion", itemTitle)
+	// Resync ROM index so any ROMs staged during the build are reflected.
+	if a.store != nil {
+		_ = a.store.SyncUserROMs(a.dataPath)
+	}
 	return nil
 }
 
@@ -765,9 +776,15 @@ func (a *App) runBuildSteps(ctx context.Context, steps []models.BuildStep, deps 
 		return nil, fmt.Errorf("failed to create version data directory: %w", err)
 	}
 
-	romHashes, err := metadata.ScanROMLibrary(a.dataPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan ROM library: %w", err)
+	var romHashes map[string]string
+	if a.store != nil {
+		romHashes, _ = a.store.GetROMLocalPaths()
+	} else {
+		var err error
+		romHashes, err = metadata.ScanROMLibrary(a.dataPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan ROM library: %w", err)
+		}
 	}
 
 	var msys2Root string
@@ -1117,7 +1134,7 @@ func (a *App) LaunchVersion(itemTitle string, executablePath string) error {
 	return nil
 }
 
-// GetROMStatus scans the ROM library for the given version and returns MD5 → found.
+// GetROMStatus returns MD5 → present for every format needed by a version's ROM dependencies.
 func (a *App) GetROMStatus(itemTitle string) (map[string]bool, error) {
 	version, err := metadata.LoadOneVersion(a.metadataPath, itemTitle)
 	if err != nil {
@@ -1127,19 +1144,19 @@ func (a *App) GetROMStatus(itemTitle string) (map[string]bool, error) {
 		return nil, fmt.Errorf("version not found: %s", itemTitle)
 	}
 
-	foundHashes, err := metadata.ScanROMLibrary(a.dataPath)
-	if err != nil {
-		return nil, err
-	}
-
 	status := make(map[string]bool)
 	for _, rom := range version.ROMDependencies {
 		for _, f := range rom.Formats {
-			_, found := foundHashes[f.Checksums.MD5]
-			status[f.Checksums.MD5] = found
+			if f.Checksums.MD5 == "" {
+				continue
+			}
+			if a.store != nil {
+				status[f.Checksums.MD5] = a.store.IsROMPresent(f.Checksums.MD5)
+			} else {
+				status[f.Checksums.MD5] = false
+			}
 		}
 	}
-
 	return status, nil
 }
 
@@ -1147,21 +1164,31 @@ func (a *App) GetROMStatus(itemTitle string) (map[string]bool, error) {
 // MatchDroppedROMs calculates the MD5 of each dropped file and compares it
 // against every VideoGameRom format in the library. Returns matched and unmatched files.
 func (a *App) MatchDroppedROMs(paths []string) (*models.ROMDropSummary, error) {
-	allRoms, err := metadata.LoadAllRoms(a.metadataPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Build md5 → (romItemTitle, ext) index from library metadata.
+	// Build md5 → {itemTitle, ext} index from the DB when available.
 	type romEntry struct {
 		romTitle  string
 		formatExt string
 	}
 	index := make(map[string]romEntry)
-	for _, rom := range allRoms {
-		for _, f := range rom.Formats {
-			if f.Checksums.MD5 != "" {
-				index[strings.ToLower(f.Checksums.MD5)] = romEntry{rom.ItemTitle, f.Ext}
+
+	if a.store != nil {
+		dbIndex, err := a.store.GetROMCatalogIndex()
+		if err != nil {
+			return nil, err
+		}
+		for md5, e := range dbIndex {
+			index[md5] = romEntry{e.ItemTitle, e.Ext}
+		}
+	} else {
+		allRoms, err := metadata.LoadAllRoms(a.metadataPath)
+		if err != nil {
+			return nil, err
+		}
+		for _, rom := range allRoms {
+			for _, f := range rom.Formats {
+				if f.Checksums.MD5 != "" {
+					index[strings.ToLower(f.Checksums.MD5)] = romEntry{rom.ItemTitle, f.Ext}
+				}
 			}
 		}
 	}
@@ -1209,6 +1236,9 @@ func (a *App) ImportROMs(matches []models.ROMFileMatch, move bool) error {
 		}
 		_ = a.copyToUserLibrary("VideoGameRom", m.ROMTitle)
 	}
+	if a.store != nil {
+		_ = a.store.SyncUserROMs(a.dataPath)
+	}
 	return nil
 }
 
@@ -1229,7 +1259,13 @@ func (a *App) AddROMFiles(itemTitle string, paths []string, move bool) ([]string
 	}
 
 	romItemByMD5 := make(map[string]string)
-	if allRoms, err := metadata.LoadAllRoms(a.metadataPath); err == nil {
+	if a.store != nil {
+		if idx, err := a.store.GetROMCatalogIndex(); err == nil {
+			for md5, e := range idx {
+				romItemByMD5[md5] = e.ItemTitle
+			}
+		}
+	} else if allRoms, err := metadata.LoadAllRoms(a.metadataPath); err == nil {
 		for _, r := range allRoms {
 			for _, f := range r.Formats {
 				romItemByMD5[f.Checksums.MD5] = r.ItemTitle
@@ -1280,9 +1316,15 @@ func (a *App) AddROMFiles(itemTitle string, paths []string, move bool) ([]string
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func (a *App) copyROMs(deps []models.ROMDependency, installDir string) error {
-	foundHashes, err := metadata.ScanROMLibrary(a.dataPath)
-	if err != nil {
-		return fmt.Errorf("failed to scan ROM library: %w", err)
+	var foundHashes map[string]string
+	if a.store != nil {
+		foundHashes, _ = a.store.GetROMLocalPaths()
+	} else {
+		var err error
+		foundHashes, err = metadata.ScanROMLibrary(a.dataPath)
+		if err != nil {
+			return fmt.Errorf("failed to scan ROM library: %w", err)
+		}
 	}
 	for _, rom := range deps {
 		if rom.InstallPath == "" {
@@ -1618,6 +1660,9 @@ func copyDirRecursive(src, dest string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
 		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {

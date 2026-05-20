@@ -43,6 +43,8 @@ export function GetRoms():Promise<Array<models.VideoGameRom>>;
 
 export function GetSettings():Promise<main.Settings>;
 
+export function GetVersion(arg1:string):Promise<models.VideoGameVersion>;
+
 export function GetVersions():Promise<Array<models.VideoGameVersion>>;
 
 export function ImportROMs(arg1:Array<models.ROMFileMatch>,arg2:boolean):Promise<void>;
@@ -54,6 +56,8 @@ export function IsDevMode():Promise<boolean>;
 export function LaunchVersion(arg1:string,arg2:string):Promise<void>;
 
 export function MatchDroppedROMs(arg1:Array<string>):Promise<models.ROMDropSummary>;
+
+export function RefreshLibraryIndex():Promise<void>;
 
 export function SaveSettings(arg1:string):Promise<void>;
 
