@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "include-media": "^2.0.0",
     "marked": "^17.0.5",
     "vue": "^3.2.37"
   },

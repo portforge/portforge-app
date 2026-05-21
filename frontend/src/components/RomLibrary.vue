@@ -1,18 +1,33 @@
 <script setup>
 import { computed } from 'vue'
+import { artworkAspectRatio, primaryArtwork, defaultArtworkType } from '../utils/artwork.js'
 
 const props = defineProps({
   roms:   { type: Array,  required: true },
   status: { type: Object, required: true },
 })
 
+const emit = defineEmits(['select'])
+
+const enc = encodeURIComponent
+
 const sortedRoms = computed(() =>
-  [...props.roms].sort((a, b) => {
-    const aHave = props.status[a._itemTitle] ? 0 : 1
-    const bHave = props.status[b._itemTitle] ? 0 : 1
-    return aHave - bHave
-  })
+  props.roms
+    .filter(r => props.status[r._itemTitle])
+    .sort((a, b) => (a.title || a._itemTitle).localeCompare(b.title || b._itemTitle))
 )
+
+function coverUrl(rom) {
+  const art = primaryArtwork(rom.artwork, rom._itemType)
+  if (!art) return null
+  return `/mediaitems/${enc(rom._itemType)}/${enc(rom._itemTitle)}/.artwork/${enc(art.fileName)}`
+}
+
+function cardAspectRatio(rom) {
+  const art = primaryArtwork(rom.artwork, rom._itemType)
+  const type = art?.artworkType ?? defaultArtworkType(rom._itemType)
+  return artworkAspectRatio(type)
+}
 
 function formatSize(bytes) {
   if (!bytes) return '—'
@@ -25,27 +40,27 @@ function formatSize(bytes) {
 
 <template>
   <div class="rom-library">
-    <p v-if="sortedRoms.length === 0" class="empty">No ROMs found in the mediaitems directory.</p>
+    <p v-if="sortedRoms.length === 0" class="empty">No ROMs in your library yet. Drop ROM files onto this window to add them.</p>
 
     <ul v-else class="rom-list">
-      <li v-for="rom in sortedRoms" :key="rom._itemTitle" class="rom-card">
-        <div
-          class="rom-status-indicator"
-          :class="status[rom._itemTitle] ? 'have' : 'missing'"
-          :title="status[rom._itemTitle] ? 'ROM file present' : 'ROM file missing'"
-        >{{ status[rom._itemTitle] ? '✓' : '✗' }}</div>
+      <li v-for="rom in sortedRoms" :key="rom._itemTitle">
+        <button class="rom-card" @click="emit('select', rom)">
 
-        <div class="rom-info">
-          <span class="rom-title">{{ rom.title || rom._itemTitle }}</span>
-          <span v-if="rom.platform" class="rom-platform">{{ rom.platform }}</span>
-        </div>
+          <!-- artwork or empty square placeholder -->
+          <div class="card-art" :style="{ aspectRatio: cardAspectRatio(rom) }">
+            <img
+              v-if="coverUrl(rom)"
+              :src="coverUrl(rom)"
+              :alt="rom.title || rom._itemTitle"
+            />
+          </div>
 
-        <div class="rom-formats">
-          <span v-for="fmt in rom.formats" :key="fmt.filename" class="rom-format">
-            <span class="format-name">{{ fmt.format || fmt.ext }}</span>
-            <span class="format-size">{{ formatSize(fmt.filesize) }}</span>
-          </span>
-        </div>
+          <div class="card-info">
+            <span class="card-title">{{ rom.title || rom._itemTitle }}</span>
+            <span v-if="rom.platform" class="card-platform">{{ rom.platform }}</span>
+          </div>
+
+        </button>
       </li>
     </ul>
   </div>
@@ -54,8 +69,7 @@ function formatSize(bytes) {
 <style lang="scss" scoped>
 .rom-library {
   padding: 24px;
-  max-width: 960px;
-  margin: 0 auto;
+  height: 100%;
 }
 
 .empty {
@@ -68,93 +82,124 @@ function formatSize(bytes) {
   list-style: none;
   margin: 0;
   padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+  align-items: start;
+}
+
+/* ── Card ── */
+.rom-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
+  padding: 8px;
+  background: #32323280;
+  border: 1px solid #4c4c4c;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  width: 100%;
+  transition: background-color 0.12s, border-color 0.12s;
+
+  &:hover {
+    background: #4d4d4d;
+    border-color: #d6d6d6;
+  }
 }
 
-.rom-card {
+/* ── Cover art / placeholder ── */
+.card-art {
+  width: 100%;
+  min-height: 40px; /* fallback for unknown artwork types */
+  flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #2a2a2a;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px 16px;
-  background: #343434;
-  border: 1px solid #4e4e4e;
-  border-radius: 6px;
+  justify-content: center;
+
+  img {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
 }
 
-.rom-status-indicator {
-  width: 26px;
-  height: 26px;
+/* ── Status badge ── */
+.status-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
-  flex-shrink: 0;
 
   &.have {
-    background: rgba(80, 200, 120, 0.15);
-    color: #50c878;
-    border: 1px solid rgba(80, 200, 120, 0.4);
+    background: rgba(80, 200, 120, 0.85);
+    color: #0d1f14;
   }
   &.missing {
-    background: rgba(224, 108, 117, 0.15);
-    color: #e06c75;
-    border: 1px solid rgba(224, 108, 117, 0.4);
+    background: rgba(224, 108, 117, 0.85);
+    color: #2a090b;
   }
 }
 
-.rom-info {
-  flex: 1;
+/* ── Info section ── */
+.card-info {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
 }
 
-.rom-title {
-  font-size: 14px;
+.card-title {
+  font-size: 13px;
   font-weight: 600;
-  color: #b4b4b4;
+  color: #c8c8c8;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.rom-platform {
-  font-size: 12px;
+.card-platform {
+  font-size: 11px;
   color: #8b929a;
 }
 
-.rom-formats {
+.card-formats {
   display: flex;
-  gap: 10px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
 }
 
-.rom-format {
+.format-tag {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-}
-
-.format-name {
-  font-size: 11px;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
-  color: #a0a0a0;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #8b929a;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 3px;
   padding: 1px 6px;
 }
 
 .format-size {
-  font-size: 11px;
-  color: #8b929a;
-  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+  text-transform: none;
+  color: #666;
 }
 </style>

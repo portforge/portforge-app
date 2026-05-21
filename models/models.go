@@ -27,6 +27,7 @@ type VideoGameRom struct {
 	Title     string      `json:"title"`
 	Platform  string      `json:"platform"`
 	Formats   []ROMFormat `json:"formats"`
+	Artwork   []Artwork   `json:"artwork,omitempty"`
 }
 
 type Platform struct {
@@ -41,6 +42,7 @@ type ROMFileMatch struct {
 	FilePath  string `json:"filePath"`  // absolute path of the dropped file
 	FileName  string `json:"fileName"`  // base name for display
 	ROMTitle  string `json:"romTitle"`  // _itemTitle of the matching VideoGameRom
+	ROMType   string `json:"romType"`   // _itemType of the matching ROM
 	FormatExt string `json:"formatExt"` // file extension for display
 }
 

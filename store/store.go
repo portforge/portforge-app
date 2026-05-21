@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 	"portforge/metadata"
@@ -134,16 +135,20 @@ func (s *Store) RebuildCatalog(metadataPath string) error {
 	}
 
 	for _, r := range roms {
+		// r.Artwork is already populated by LoadOneRom (which calls ScanArtworkDir
+		// as a fallback when the JSON has no artwork entries).
+		artworkJSON, _ := json.Marshal(r.Artwork)
 		_, err := tx.Exec(`
 			INSERT INTO media_items
-				(item_title, item_type, title, platform, has_update)
-			VALUES (?, 'VideoGameRom', ?, ?,
+				(item_title, item_type, title, platform, artwork, has_update)
+			VALUES (?, ?, ?, ?, ?,
 				COALESCE((SELECT has_update FROM media_items WHERE item_title = ?), 0))
 			ON CONFLICT(item_title) DO UPDATE SET
-				item_type = 'VideoGameRom',
+				item_type = excluded.item_type,
 				title     = excluded.title,
-				platform  = excluded.platform
-		`, r.ItemTitle, r.Title, r.Platform, r.ItemTitle)
+				platform  = excluded.platform,
+				artwork   = excluded.artwork
+		`, r.ItemTitle, r.ItemType, r.Title, r.Platform, string(artworkJSON), r.ItemTitle)
 		if err != nil {
 			return fmt.Errorf("upsert rom %q: %w", r.ItemTitle, err)
 		}
@@ -167,19 +172,10 @@ func (s *Store) RebuildCatalog(metadataPath string) error {
 
 // ── User ROM library sync ─────────────────────────────────────────────────────
 
-// SyncUserROMs scans {dataPath}/VideoGameRom/, computes MD5 for every file,
-// and updates local_path in rom_formats for matching entries.
+// SyncUserROMs scans all ROM type directories under dataPath, computes MD5 for
+// every file, and updates local_path in rom_formats for matching entries.
 func (s *Store) SyncUserROMs(dataPath string) error {
 	if _, err := s.db.Exec(`UPDATE rom_formats SET local_path = NULL`); err != nil {
-		return err
-	}
-
-	romDir := filepath.Join(dataPath, "VideoGameRom")
-	entries, err := os.ReadDir(romDir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
 		return err
 	}
 
@@ -189,25 +185,35 @@ func (s *Store) SyncUserROMs(dataPath string) error {
 	}
 	defer stmt.Close()
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, itemType := range metadata.RomItemTypes {
+		romDir := filepath.Join(dataPath, itemType)
+		entries, err := os.ReadDir(romDir)
+		if os.IsNotExist(err) {
 			continue
 		}
-		itemDir := filepath.Join(romDir, entry.Name())
-		files, err := os.ReadDir(itemDir)
 		if err != nil {
-			continue
+			return err
 		}
-		for _, f := range files {
-			if f.IsDir() {
+		for _, entry := range entries {
+			if !entry.IsDir() {
 				continue
 			}
-			p := filepath.Join(itemDir, f.Name())
-			hash, err := hashMD5(p)
+			itemDir := filepath.Join(romDir, entry.Name())
+			files, err := os.ReadDir(itemDir)
 			if err != nil {
 				continue
 			}
-			stmt.Exec(p, hash)
+			for _, f := range files {
+				if f.IsDir() {
+					continue
+				}
+				p := filepath.Join(itemDir, f.Name())
+				hash, err := hashMD5(p)
+				if err != nil {
+					continue
+				}
+				stmt.Exec(p, hash)
+			}
 		}
 	}
 	return nil
@@ -262,13 +268,20 @@ func (s *Store) GetVersions() ([]models.VideoGameVersion, error) {
 	return out, rows.Err()
 }
 
-// GetRoms returns all VideoGameRom rows with their formats (display fields only).
+// GetRoms returns all ROM rows (all types in metadata.RomItemTypes) with their formats (display fields only).
 func (s *Store) GetRoms() ([]models.VideoGameRom, error) {
-	rows, err := s.db.Query(`
-		SELECT item_title, title, platform
-		FROM media_items WHERE item_type = 'VideoGameRom'
+	placeholders := make([]string, len(metadata.RomItemTypes))
+	args := make([]interface{}, len(metadata.RomItemTypes))
+	for i, t := range metadata.RomItemTypes {
+		placeholders[i] = "?"
+		args[i] = t
+	}
+	query := fmt.Sprintf(`
+		SELECT item_title, item_type, title, platform, artwork
+		FROM media_items WHERE item_type IN (%s)
 		ORDER BY LOWER(title)
-	`)
+	`, strings.Join(placeholders, ","))
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -278,8 +291,12 @@ func (s *Store) GetRoms() ([]models.VideoGameRom, error) {
 	idx := map[string]int{}
 	for rows.Next() {
 		var r models.VideoGameRom
-		if err := rows.Scan(&r.ItemTitle, &r.Title, &r.Platform); err != nil {
+		var artwork sql.NullString
+		if err := rows.Scan(&r.ItemTitle, &r.ItemType, &r.Title, &r.Platform, &artwork); err != nil {
 			return nil, err
+		}
+		if artwork.Valid && artwork.String != "" && artwork.String != "null" {
+			json.Unmarshal([]byte(artwork.String), &r.Artwork)
 		}
 		idx[r.ItemTitle] = len(roms)
 		roms = append(roms, r)
@@ -356,16 +373,20 @@ func (s *Store) GetROMLocalPaths() (map[string]string, error) {
 	return out, rows.Err()
 }
 
-// GetROMCatalogIndex returns md5 → {itemTitle, ext} for all catalog ROM formats.
+// GetROMCatalogIndex returns md5 → {itemTitle, ext, itemType} for all catalog ROM formats.
 // Used by MatchDroppedROMs instead of loading all ROM JSON files.
 type ROMIndexEntry struct {
 	ItemTitle string
 	Ext       string
+	ItemType  string
 }
 
 func (s *Store) GetROMCatalogIndex() (map[string]ROMIndexEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT LOWER(md5), item_title, ext FROM rom_formats WHERE md5 != ''
+		SELECT LOWER(rf.md5), rf.item_title, rf.ext, mi.item_type
+		FROM rom_formats rf
+		JOIN media_items mi ON mi.item_title = rf.item_title
+		WHERE rf.md5 != ''
 	`)
 	if err != nil {
 		return nil, err
@@ -376,10 +397,32 @@ func (s *Store) GetROMCatalogIndex() (map[string]ROMIndexEntry, error) {
 	for rows.Next() {
 		var hash string
 		var e ROMIndexEntry
-		if err := rows.Scan(&hash, &e.ItemTitle, &e.Ext); err != nil {
+		if err := rows.Scan(&hash, &e.ItemTitle, &e.Ext, &e.ItemType); err != nil {
 			return nil, err
 		}
 		out[hash] = e
+	}
+	return out, rows.Err()
+}
+
+// GetRomFilePaths returns md5 → localPath for every format of a specific ROM
+// item that is present in the user's library. Used by the ROM detail page.
+func (s *Store) GetRomFilePaths(itemTitle string) (map[string]string, error) {
+	rows, err := s.db.Query(`
+		SELECT LOWER(md5), local_path FROM rom_formats
+		WHERE item_title = ? AND local_path IS NOT NULL AND md5 != ''
+	`, itemTitle)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var hash, path string
+		if err := rows.Scan(&hash, &path); err != nil {
+			return nil, err
+		}
+		out[hash] = path
 	}
 	return out, rows.Err()
 }
@@ -392,6 +435,13 @@ func (s *Store) IsROMPresent(md5 string) bool {
 }
 
 // ── Update tracking ───────────────────────────────────────────────────────────
+
+// GetItemType returns the item_type for an item from media_items.
+func (s *Store) GetItemType(itemTitle string) (string, error) {
+	var t string
+	err := s.db.QueryRow(`SELECT item_type FROM media_items WHERE item_title = ?`, itemTitle).Scan(&t)
+	return t, err
+}
 
 // GetItemUpdate returns the persistent has_update flag for an item.
 func (s *Store) GetItemUpdate(itemTitle string) bool {

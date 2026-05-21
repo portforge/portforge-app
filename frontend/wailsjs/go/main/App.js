@@ -70,6 +70,14 @@ export function GetRedumperPath() {
   return window['go']['main']['App']['GetRedumperPath']();
 }
 
+export function GetRom(arg1) {
+  return window['go']['main']['App']['GetRom'](arg1);
+}
+
+export function GetRomFilePaths(arg1) {
+  return window['go']['main']['App']['GetRomFilePaths'](arg1);
+}
+
 export function GetRomLibraryStatus() {
   return window['go']['main']['App']['GetRomLibraryStatus']();
 }

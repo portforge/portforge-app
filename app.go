@@ -549,6 +549,27 @@ func (a *App) GetRoms() ([]models.VideoGameRom, error) {
 	return metadata.LoadAllRoms(a.metadataPath)
 }
 
+// GetRom loads the full VideoGameRom JSON for a given item title.
+// Used by the ROM detail page, which needs fields not stored in the DB index.
+func (a *App) GetRom(itemTitle string) (*models.VideoGameRom, error) {
+	itemType := "VideoGameRom"
+	if a.store != nil {
+		if t, err := a.store.GetItemType(itemTitle); err == nil && t != "" {
+			itemType = t
+		}
+	}
+	return metadata.LoadOneRom(a.metadataPath, itemTitle, itemType)
+}
+
+// GetRomFilePaths returns md5 → local file path for all format files of a ROM
+// that are present in the user's library.
+func (a *App) GetRomFilePaths(itemTitle string) (map[string]string, error) {
+	if a.store != nil {
+		return a.store.GetRomFilePaths(itemTitle)
+	}
+	return map[string]string{}, nil
+}
+
 // GetRomLibraryStatus returns a map of ROM itemTitle → whether any file is present.
 func (a *App) GetRomLibraryStatus() (map[string]bool, error) {
 	if a.store != nil {
@@ -1164,9 +1185,10 @@ func (a *App) GetROMStatus(itemTitle string) (map[string]bool, error) {
 // MatchDroppedROMs calculates the MD5 of each dropped file and compares it
 // against every VideoGameRom format in the library. Returns matched and unmatched files.
 func (a *App) MatchDroppedROMs(paths []string) (*models.ROMDropSummary, error) {
-	// Build md5 → {itemTitle, ext} index from the DB when available.
+	// Build md5 → {itemTitle, ext, itemType} index from the DB when available.
 	type romEntry struct {
 		romTitle  string
+		romType   string
 		formatExt string
 	}
 	index := make(map[string]romEntry)
@@ -1177,7 +1199,7 @@ func (a *App) MatchDroppedROMs(paths []string) (*models.ROMDropSummary, error) {
 			return nil, err
 		}
 		for md5, e := range dbIndex {
-			index[md5] = romEntry{e.ItemTitle, e.Ext}
+			index[md5] = romEntry{e.ItemTitle, e.ItemType, e.Ext}
 		}
 	} else {
 		allRoms, err := metadata.LoadAllRoms(a.metadataPath)
@@ -1187,7 +1209,7 @@ func (a *App) MatchDroppedROMs(paths []string) (*models.ROMDropSummary, error) {
 		for _, rom := range allRoms {
 			for _, f := range rom.Formats {
 				if f.Checksums.MD5 != "" {
-					index[strings.ToLower(f.Checksums.MD5)] = romEntry{rom.ItemTitle, f.Ext}
+					index[strings.ToLower(f.Checksums.MD5)] = romEntry{rom.ItemTitle, rom.ItemType, f.Ext}
 				}
 			}
 		}
@@ -1205,6 +1227,7 @@ func (a *App) MatchDroppedROMs(paths []string) (*models.ROMDropSummary, error) {
 				FilePath:  path,
 				FileName:  filepath.Base(path),
 				ROMTitle:  entry.romTitle,
+				ROMType:   entry.romType,
 				FormatExt: entry.formatExt,
 			})
 		} else {
@@ -1217,7 +1240,11 @@ func (a *App) MatchDroppedROMs(paths []string) (*models.ROMDropSummary, error) {
 // ImportROMs copies or moves previously matched ROM files into the user data directory.
 func (a *App) ImportROMs(matches []models.ROMFileMatch, move bool) error {
 	for _, m := range matches {
-		destDir := filepath.Join(a.dataPath, "VideoGameRom", m.ROMTitle)
+		romType := m.ROMType
+		if romType == "" {
+			romType = "VideoGameRom"
+		}
+		destDir := filepath.Join(a.dataPath, romType, m.ROMTitle)
 		if err := os.MkdirAll(destDir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory for %s: %w", m.ROMTitle, err)
 		}
@@ -1234,7 +1261,7 @@ func (a *App) ImportROMs(matches []models.ROMFileMatch, move bool) error {
 				return fmt.Errorf("failed to copy %s: %w", m.FileName, err)
 			}
 		}
-		_ = a.copyToUserLibrary("VideoGameRom", m.ROMTitle)
+		_ = a.copyToUserLibrary(romType, m.ROMTitle)
 	}
 	if a.store != nil {
 		_ = a.store.SyncUserROMs(a.dataPath)
@@ -1258,17 +1285,21 @@ func (a *App) AddROMFiles(itemTitle string, paths []string, move bool) ([]string
 		}
 	}
 
-	romItemByMD5 := make(map[string]string)
+	type romItemEntry struct {
+		title    string
+		itemType string
+	}
+	romItemByMD5 := make(map[string]romItemEntry)
 	if a.store != nil {
 		if idx, err := a.store.GetROMCatalogIndex(); err == nil {
 			for md5, e := range idx {
-				romItemByMD5[md5] = e.ItemTitle
+				romItemByMD5[md5] = romItemEntry{e.ItemTitle, e.ItemType}
 			}
 		}
 	} else if allRoms, err := metadata.LoadAllRoms(a.metadataPath); err == nil {
 		for _, r := range allRoms {
 			for _, f := range r.Formats {
-				romItemByMD5[f.Checksums.MD5] = r.ItemTitle
+				romItemByMD5[f.Checksums.MD5] = romItemEntry{r.ItemTitle, r.ItemType}
 			}
 		}
 	}
@@ -1285,8 +1316,12 @@ func (a *App) AddROMFiles(itemTitle string, paths []string, move bool) ([]string
 		}
 
 		var destDir string
-		if romItemTitle, ok := romItemByMD5[hash]; ok {
-			destDir = filepath.Join(a.dataPath, "VideoGameRom", romItemTitle)
+		if entry, ok := romItemByMD5[hash]; ok {
+			romType := entry.itemType
+			if romType == "" {
+				romType = "VideoGameRom"
+			}
+			destDir = filepath.Join(a.dataPath, romType, entry.title)
 		} else {
 			destDir = filepath.Join(a.dataPath, "VideoGameVersion", itemTitle)
 		}

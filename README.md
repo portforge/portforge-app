@@ -201,7 +201,7 @@ portforge/
 │           ├── GameLibrary.vue
 │           ├── GameDetail.vue
 │           ├── RomLibrary.vue
-│           ├── DiscDumper.vue
+│           ├── DiscDumper.vue    ← disc dumping UI (dev builds only)
 │           └── Settings.vue
 ├── docs/
 │   └── build-system.md     ← full build spec reference
@@ -216,6 +216,8 @@ portforge/
 - [The Wails project](https://wails.io/) and its contributors
 - [No-Intro](https://no-intro.org/) and [Redump](http://redump.org/) for cataloging original game media
 - The contributors to [SteamGridDB](https://www.steamgriddb.com/) for game artwork
+- The contributors to [EmuMovies](https://emumovies.com/) for game artwork
+- The contributors to [LaunchBox Games Database](https://gamesdb.launchbox-app.com//) for game artwork
 - Claude by Anthropic for coding assistance
 - The entire Open Source ecosystem and the community behind it
 

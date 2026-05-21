@@ -37,6 +37,10 @@ export function GetROMStatus(arg1:string):Promise<Record<string, boolean>>;
 
 export function GetRedumperPath():Promise<string>;
 
+export function GetRom(arg1:string):Promise<models.VideoGameRom>;
+
+export function GetRomFilePaths(arg1:string):Promise<Record<string, string>>;
+
 export function GetRomLibraryStatus():Promise<Record<string, boolean>>;
 
 export function GetRoms():Promise<Array<models.VideoGameRom>>;

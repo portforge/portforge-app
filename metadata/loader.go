@@ -126,33 +126,41 @@ func ScanROMs(itemDir string) (map[string]string, error) {
 	return result, nil
 }
 
-// LoadAllRoms reads all VideoGameRom mediaitem directories.
-func LoadAllRoms(baseDir string) ([]models.VideoGameRom, error) {
-	entries, err := os.ReadDir(filepath.Join(baseDir, "VideoGameRom"))
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
+// RomItemTypes is the list of known ROM MediaItem directory names.
+var RomItemTypes = []string{"VideoGameRom", "N64Rom", "NESRom"}
 
+// LoadAllRoms reads all ROM mediaitem directories across all known ROM item types.
+func LoadAllRoms(baseDir string) ([]models.VideoGameRom, error) {
 	var roms []models.VideoGameRom
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, itemType := range RomItemTypes {
+		dir := filepath.Join(baseDir, itemType)
+		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
 			continue
 		}
-		r, err := LoadOneRom(baseDir, entry.Name())
-		if err != nil || r == nil {
-			continue
+		if err != nil {
+			return nil, err
 		}
-		roms = append(roms, *r)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			r, err := LoadOneRom(baseDir, entry.Name(), itemType)
+			if err != nil || r == nil {
+				continue
+			}
+			roms = append(roms, *r)
+		}
 	}
 	return roms, nil
 }
 
 // LoadOneRom loads a single VideoGameRom from its mediaitem directory.
-func LoadOneRom(baseDir, itemTitle string) (*models.VideoGameRom, error) {
-	jsonPath := filepath.Join(baseDir, "VideoGameRom", itemTitle, ".mediaitem.json")
+// itemType is the directory name (e.g. "VideoGameRom", "N64Rom", "NESRom").
+// If the JSON contains no artwork entries the .artwork/ folder is scanned
+// automatically so callers always receive populated artwork when available.
+func LoadOneRom(baseDir, itemTitle, itemType string) (*models.VideoGameRom, error) {
+	jsonPath := filepath.Join(baseDir, itemType, itemTitle, ".mediaitem.json")
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
 		return nil, err
@@ -163,7 +171,56 @@ func LoadOneRom(baseDir, itemTitle string) (*models.VideoGameRom, error) {
 		return nil, err
 	}
 	r.ItemTitle = itemTitle
+	if len(r.Artwork) == 0 {
+		r.Artwork = ScanArtworkDir(filepath.Join(baseDir, itemType, itemTitle, ".artwork"))
+	}
 	return &r, nil
+}
+
+// ScanArtworkDir reads a .artwork/ directory and synthesises Artwork entries
+// from every image file found (sorted lexically). The artworkType is extracted
+// from the filename, which follows the convention:
+//
+//	[artworkType] · [langCode ·] [#].[ext]
+//
+// e.g. "Cover · en · 1.jpg" → artworkType "Cover"
+//      "N64BoxFront · 1.png" → artworkType "N64BoxFront"
+func ScanArtworkDir(dir string) []models.Artwork {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	imageExts := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true,
+	}
+	var out []models.Artwork
+	for _, e := range entries {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if !imageExts[ext] {
+			continue
+		}
+		out = append(out, models.Artwork{
+			ArtworkType:   artworkTypeFromFilename(e.Name()),
+			FileName:      e.Name(),
+			FileExtension: ext,
+		})
+	}
+	return out
+}
+
+// artworkTypeFromFilename extracts the artworkType from a MediaItem artwork
+// filename. The expected format is "[artworkType] · [langCode ·] [#].[ext]";
+// the type is everything before the first " · " separator.
+func artworkTypeFromFilename(filename string) string {
+	nameNoExt := strings.TrimSuffix(filename, filepath.Ext(filename))
+	// separator is space + middle dot (U+00B7) + space
+	if idx := strings.Index(nameNoExt, " · "); idx > 0 {
+		return nameNoExt[:idx]
+	}
+	return nameNoExt
 }
 
 // ScanROMLibrary returns a combined MD5 → filepath map for all files across

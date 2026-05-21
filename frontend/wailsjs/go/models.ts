@@ -390,6 +390,7 @@ export namespace models {
 	    filePath: string;
 	    fileName: string;
 	    romTitle: string;
+	    romType: string;
 	    formatExt: string;
 	
 	    static createFrom(source: any = {}) {
@@ -401,6 +402,7 @@ export namespace models {
 	        this.filePath = source["filePath"];
 	        this.fileName = source["fileName"];
 	        this.romTitle = source["romTitle"];
+	        this.romType = source["romType"];
 	        this.formatExt = source["formatExt"];
 	    }
 	}
@@ -504,6 +506,7 @@ export namespace models {
 	    title: string;
 	    platform: string;
 	    formats: ROMFormat[];
+	    artwork?: Artwork[];
 	
 	    static createFrom(source: any = {}) {
 	        return new VideoGameRom(source);
@@ -516,6 +519,7 @@ export namespace models {
 	        this.title = source["title"];
 	        this.platform = source["platform"];
 	        this.formats = this.convertValues(source["formats"], ROMFormat);
+	        this.artwork = this.convertValues(source["artwork"], Artwork);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

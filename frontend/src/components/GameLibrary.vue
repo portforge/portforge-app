@@ -23,7 +23,7 @@ function bannerUrl(version) {
 
 <template>
   <div class="library">
-    <p v-if="versions.length === 0" class="empty">No versions found in the mediaitems directory.</p>
+    <p v-if="versions.length === 0" class="empty">No games found in the MediaItems directory.</p>
 
     <ul v-else class="port-list">
       <li v-for="version in versions" :key="version._itemTitle">
@@ -75,19 +75,17 @@ function bannerUrl(version) {
   list-style: none;
   margin: 0;
   padding: 0;
-  height: 100%;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  // align-content: center;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 8px;
+  align-items: start;
 }
 
 .port-card {
   position: relative;
   display: flex;
-  align-items: center;
-  gap: 16px;
+  flex-direction: column;
+  width: 100%;
   padding: 8px;
   background: #32323280;
   border: 1px solid #4c4c4c;
@@ -122,15 +120,14 @@ function bannerUrl(version) {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
   z-index: 1;
+  width: 100%;
 }
 
 .card-art {
-  height: 430px;
-  width: auto;
-  min-width: 52px;
-  flex-shrink: 0;
+  width: 100%;
+  aspect-ratio: 2 / 3;
   border-radius: 4px;
   overflow: hidden;
   background: #2d2d2d;
@@ -139,14 +136,14 @@ function bannerUrl(version) {
   justify-content: center;
 
   img {
-    height: 100%;
-    width: auto;
+    width: 100%;
+    height: auto;
     display: block;
   }
 }
 
 .card-art-placeholder {
-  width: 52px;
+  width: 100%;
   font-size: 22px;
   font-weight: 700;
   color: #4e4e4e;

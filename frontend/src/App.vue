@@ -5,6 +5,7 @@ import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import GameLibrary from './components/GameLibrary.vue'
 import GameDetail from './components/GameDetail.vue'
 import RomLibrary from './components/RomLibrary.vue'
+import RomDetail from './components/RomDetail.vue'
 import DiscDumper from './components/DiscDumper.vue'
 import Settings from './components/Settings.vue'
 
@@ -21,6 +22,7 @@ const libraryWarning = ref(null)
 
 const roms = ref([])
 const romStatus = ref({})
+const selectedRom = ref(null)
 
 const pendingDrop = ref(null)  // ROMDropSummary from MatchDroppedROMs
 const dropError = ref(null)
@@ -240,27 +242,27 @@ function dismissDrop() {
   >
     <header>
       <span class="app-title">PortForge</span>
-      <nav v-if="!selectedGame && !needsSetup" class="tab-nav">
+      <nav v-if="!needsSetup" class="tab-nav">
         <button
           class="tab-btn"
-          :class="{ active: activeTab === 'library' }"
-          @click="activeTab = 'library'"
+          :class="{ active: activeTab === 'library' && !selectedGame }"
+          @click="activeTab = 'library'; selectedGame = null; selectedRom = null"
         >Library</button>
         <button
           class="tab-btn"
-          :class="{ active: activeTab === 'roms' }"
-          @click="activeTab = 'roms'"
+          :class="{ active: activeTab === 'roms' && !selectedRom }"
+          @click="activeTab = 'roms'; selectedGame = null; selectedRom = null"
         >ROMs</button>
         <button
           v-if="isDev"
           class="tab-btn"
           :class="{ active: activeTab === 'dump' }"
-          @click="activeTab = 'dump'"
+          @click="activeTab = 'dump'; selectedGame = null; selectedRom = null"
         >Dump</button>
         <button
           class="tab-btn"
           :class="{ active: activeTab === 'settings' }"
-          @click="activeTab = 'settings'"
+          @click="activeTab = 'settings'; selectedGame = null; selectedRom = null"
         >Settings</button>
       </nav>
     </header>
@@ -339,10 +341,16 @@ function dismissDrop() {
           <DiscDumper
             v-else-if="isDev && activeTab === 'dump'"
           />
+          <RomDetail
+            v-else-if="activeTab === 'roms' && selectedRom"
+            :rom="selectedRom"
+            @back="selectedRom = null"
+          />
           <RomLibrary
             v-else-if="activeTab === 'roms'"
             :roms="roms"
             :status="romStatus"
+            @select="r => { selectedRom = r }"
           />
           <GameLibrary
             v-else
@@ -382,7 +390,7 @@ html, body {
 
 #shell {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100vh;
   position: relative;
 }
@@ -394,12 +402,14 @@ html, body {
 
 header {
   display: flex;
-  align-items: center;
-  padding: 0 24px;
-  height: 52px;
-  background-color: #272727;
-  border-bottom: 1px solid #1b1b1b;
+  flex-direction: column;
+  width: 180px;
   flex-shrink: 0;
+  height: 100vh;
+  padding: 20px 12px;
+  background-color: #272727;
+  border-right: 1px solid #1b1b1b;
+  overflow: hidden;
 }
 
 .app-title {
@@ -407,12 +417,16 @@ header {
   font-weight: 700;
   color: #e8eaed;
   letter-spacing: 0.5px;
+  padding: 0 8px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .tab-nav {
   display: flex;
-  gap: 4px;
-  margin-left: 32px;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
 }
 
 .tab-btn {
@@ -422,30 +436,29 @@ header {
   font: inherit;
   font-size: 14px;
   cursor: pointer;
-  padding: 4px 12px;
-  border-radius: 4px;
-  transition: color 0.1s;
+  padding: 7px 8px;
+  border-radius: 5px;
+  text-align: left;
+  transition: color 0.1s, background 0.1s;
 
-  &:hover { color: #c6d4df; }
+  &:hover { color: #c6d4df; background: rgba(255,255,255,0.04); }
   &.active {
     color: #e8eaed;
     font-weight: 600;
-    background: rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.08);
   }
 }
 
 /* ── Content area ── */
 .content-area {
-  /* flex: 1;
-  display: flex;
-  flex-direction: column; */
+  flex: 1;
+  min-width: 0;
   display: block;
   overflow: hidden;
   position: relative;
 }
 
 main {
-  flex: 1;
   overflow-y: auto;
   height: 100%;
 }
