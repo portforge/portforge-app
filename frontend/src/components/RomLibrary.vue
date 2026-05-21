@@ -3,17 +3,19 @@ import { computed } from 'vue'
 import { artworkAspectRatio, primaryArtwork, defaultArtworkType } from '../utils/artwork.js'
 
 const props = defineProps({
-  roms:   { type: Array,  required: true },
-  status: { type: Object, required: true },
+  roms:     { type: Array,  required: true },
+  status:   { type: Object, required: true },
+  platform: { type: Object, default: null },  // GamingPlatform entry from RomPlatforms
 })
 
-const emit = defineEmits(['select'])
+const emit = defineEmits(['select', 'back'])
 
 const enc = encodeURIComponent
 
 const sortedRoms = computed(() =>
   props.roms
-    .filter(r => props.status[r._itemTitle])
+    .filter(r => props.status[r._itemTitle]
+      && (!props.platform || r._itemType === props.platform.gamesItemType))
     .sort((a, b) => (a.title || a._itemTitle).localeCompare(b.title || b._itemTitle))
 )
 
@@ -40,6 +42,7 @@ function formatSize(bytes) {
 
 <template>
   <div class="rom-library">
+    <button v-if="platform" class="back-btn" @click="emit('back')">&#8592; Platforms</button>
     <p v-if="sortedRoms.length === 0" class="empty">No ROMs in your library yet. Drop ROM files onto this window to add them.</p>
 
     <ul v-else class="rom-list">
@@ -70,6 +73,19 @@ function formatSize(bytes) {
 .rom-library {
   padding: 24px;
   height: 100%;
+}
+
+.back-btn {
+  background: none;
+  border: none;
+  color: #8b929a;
+  font: inherit;
+  font-size: 13px;
+  padding: 0;
+  margin-bottom: 16px;
+  cursor: pointer;
+  display: block;
+  &:hover { color: #d6d6d6; }
 }
 
 .empty {

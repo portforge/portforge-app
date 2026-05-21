@@ -5,6 +5,7 @@ import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import GameLibrary from './components/GameLibrary.vue'
 import GameDetail from './components/GameDetail.vue'
 import RomLibrary from './components/RomLibrary.vue'
+import RomPlatforms from './components/RomPlatforms.vue'
 import RomDetail from './components/RomDetail.vue'
 import DiscDumper from './components/DiscDumper.vue'
 import Settings from './components/Settings.vue'
@@ -22,7 +23,8 @@ const libraryWarning = ref(null)
 
 const roms = ref([])
 const romStatus = ref({})
-const selectedRom = ref(null)
+const selectedRom      = ref(null)
+const selectedPlatform = ref(null)
 
 const pendingDrop = ref(null)  // ROMDropSummary from MatchDroppedROMs
 const dropError = ref(null)
@@ -251,7 +253,7 @@ function dismissDrop() {
         <button
           class="tab-btn"
           :class="{ active: activeTab === 'roms' && !selectedRom }"
-          @click="activeTab = 'roms'; selectedGame = null; selectedRom = null"
+          @click="activeTab = 'roms'; selectedGame = null; selectedRom = null; selectedPlatform = null"
         >ROMs</button>
         <button
           v-if="isDev"
@@ -347,10 +349,18 @@ function dismissDrop() {
             @back="selectedRom = null"
           />
           <RomLibrary
+            v-else-if="activeTab === 'roms' && selectedPlatform"
+            :roms="roms"
+            :status="romStatus"
+            :platform="selectedPlatform"
+            @select="r => { selectedRom = r }"
+            @back="selectedPlatform = null"
+          />
+          <RomPlatforms
             v-else-if="activeTab === 'roms'"
             :roms="roms"
             :status="romStatus"
-            @select="r => { selectedRom = r }"
+            @select="p => { selectedPlatform = p }"
           />
           <GameLibrary
             v-else
