@@ -30,6 +30,10 @@ export function GetDefaultPaths() {
   return window['go']['main']['App']['GetDefaultPaths']();
 }
 
+export function GetDuckStationPath() {
+  return window['go']['main']['App']['GetDuckStationPath']();
+}
+
 export function GetGames() {
   return window['go']['main']['App']['GetGames']();
 }
@@ -82,6 +86,10 @@ export function GetRomLibraryStatus() {
   return window['go']['main']['App']['GetRomLibraryStatus']();
 }
 
+export function GetRomState(arg1) {
+  return window['go']['main']['App']['GetRomState'](arg1);
+}
+
 export function GetRoms() {
   return window['go']['main']['App']['GetRoms']();
 }
@@ -110,6 +118,10 @@ export function IsDevMode() {
   return window['go']['main']['App']['IsDevMode']();
 }
 
+export function LaunchRom(arg1, arg2) {
+  return window['go']['main']['App']['LaunchRom'](arg1, arg2);
+}
+
 export function LaunchVersion(arg1, arg2) {
   return window['go']['main']['App']['LaunchVersion'](arg1, arg2);
 }
@@ -136,6 +148,10 @@ export function SelectExecutable() {
 
 export function SelectFolder() {
   return window['go']['main']['App']['SelectFolder']();
+}
+
+export function SetDuckStationPath(arg1) {
+  return window['go']['main']['App']['SetDuckStationPath'](arg1);
 }
 
 export function SetRedumperPath(arg1) {

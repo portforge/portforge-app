@@ -373,17 +373,18 @@ func (s *Store) GetROMLocalPaths() (map[string]string, error) {
 	return out, rows.Err()
 }
 
-// GetROMCatalogIndex returns md5 → {itemTitle, ext, itemType} for all catalog ROM formats.
+// GetROMCatalogIndex returns md5 → {itemTitle, ext, itemType, filename} for all catalog ROM formats.
 // Used by MatchDroppedROMs instead of loading all ROM JSON files.
 type ROMIndexEntry struct {
 	ItemTitle string
 	Ext       string
 	ItemType  string
+	Filename  string
 }
 
 func (s *Store) GetROMCatalogIndex() (map[string]ROMIndexEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT LOWER(rf.md5), rf.item_title, rf.ext, mi.item_type
+		SELECT LOWER(rf.md5), rf.item_title, rf.ext, mi.item_type, rf.filename
 		FROM rom_formats rf
 		JOIN media_items mi ON mi.item_title = rf.item_title
 		WHERE rf.md5 != ''
@@ -397,7 +398,7 @@ func (s *Store) GetROMCatalogIndex() (map[string]ROMIndexEntry, error) {
 	for rows.Next() {
 		var hash string
 		var e ROMIndexEntry
-		if err := rows.Scan(&hash, &e.ItemTitle, &e.Ext, &e.ItemType); err != nil {
+		if err := rows.Scan(&hash, &e.ItemTitle, &e.Ext, &e.ItemType, &e.Filename); err != nil {
 			return nil, err
 		}
 		out[hash] = e

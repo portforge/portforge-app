@@ -2,9 +2,9 @@
 import { ref, onMounted } from 'vue'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 import {
-  GetSettings, SaveSettings, SelectFolder, ValidateMediaItemsPath,
+  GetSettings, SaveSettings, SelectFolder, SelectExecutable, ValidateMediaItemsPath,
   GetDefaultPaths, GetMediaItemsSHA, CheckMediaItemsUpdate, SyncMediaItems,
-  IsDevMode, RefreshLibraryIndex,
+  IsDevMode, RefreshLibraryIndex, SetDuckStationPath,
 } from '../../wailsjs/go/main/App'
 
 const emit = defineEmits(['saved', 'refreshed'])
@@ -28,6 +28,21 @@ const downloadPhase = ref('')
 const downloadPercent = ref(0)
 const checkingUpdate = ref(false)
 
+const duckstationPath = ref('')
+
+async function browseDuckStation() {
+  const chosen = await SelectExecutable().catch(() => null)
+  if (!chosen) return
+  duckstationPath.value = chosen
+  await saveDuckStationPath()
+}
+
+async function saveDuckStationPath() {
+  await SetDuckStationPath(duckstationPath.value).catch(e => {
+    error.value = String(e)
+  })
+}
+
 onMounted(async () => {
   const [settings, defaults] = await Promise.all([
     GetSettings().catch(() => null),
@@ -36,6 +51,7 @@ onMounted(async () => {
   dataPath.value = settings?.dataPath || defaults.dataPath || ''
   devMode.value = await IsDevMode().catch(() => false)
   installedSHA.value = devMode.value ? '' : await GetMediaItemsSHA().catch(() => '')
+  duckstationPath.value = settings?.duckstationPath || ''
 
   EventsOn('mediaitems:progress', ({ phase, percent }) => {
     downloadPhase.value   = phase
@@ -171,6 +187,22 @@ async function save() {
         <div class="path-row">
           <input class="path-input" v-model="dataPath" placeholder="No folder selected" spellcheck="false" />
           <button class="btn-browse" @click="browseData">Browse…</button>
+        </div>
+      </div>
+
+      <!-- DuckStation -->
+      <div class="field-group">
+        <label class="field-label">DuckStation</label>
+        <p class="field-hint">PlayStation 1 emulator used to launch PS1 ROMs.</p>
+        <div class="path-row">
+          <input
+            class="path-input"
+            v-model="duckstationPath"
+            placeholder="No emulator selected"
+            spellcheck="false"
+            @blur="saveDuckStationPath"
+          />
+          <button class="btn-browse" @click="browseDuckStation">Browse…</button>
         </div>
       </div>
 

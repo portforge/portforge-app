@@ -364,11 +364,12 @@ func extractZipStrip1(src, destDir string) error {
 }
 
 type App struct {
-	ctx          context.Context
-	metadataPath string // catalog: MediaItem JSON + artwork, stored in config dir (read-only)
-	dataPath     string // user data: ROM files, install dirs, .state.json (writable)
-	redumperPath string // path to the redumper binary (optional)
-	store        *store.Store
+	ctx             context.Context
+	metadataPath    string // catalog: MediaItem JSON + artwork, stored in config dir (read-only)
+	dataPath        string // user data: ROM files, install dirs, .state.json (writable)
+	redumperPath    string // path to the redumper binary (optional)
+	duckstationPath string // path to the DuckStation executable (optional)
+	store           *store.Store
 
 	installMu     sync.RWMutex
 	installingFor string
@@ -387,8 +388,9 @@ func NewApp() *App {
 }
 
 type Settings struct {
-	DataPath     string `json:"dataPath"`
-	RedumperPath string `json:"redumperPath,omitempty"`
+	DataPath        string `json:"dataPath"`
+	RedumperPath    string `json:"redumperPath,omitempty"`
+	DuckStationPath string `json:"duckstationPath,omitempty"`
 }
 
 func configDir() (string, error) {
@@ -410,8 +412,9 @@ func settingsFilePath() (string, error) {
 // GetSettings returns the current app settings.
 func (a *App) GetSettings() Settings {
 	return Settings{
-		DataPath:     a.dataPath,
-		RedumperPath: a.redumperPath,
+		DataPath:        a.dataPath,
+		RedumperPath:    a.redumperPath,
+		DuckStationPath: a.duckstationPath,
 	}
 }
 
@@ -425,8 +428,9 @@ func (a *App) persistSettings() error {
 		return err
 	}
 	data, err := json.Marshal(Settings{
-		DataPath:     a.dataPath,
-		RedumperPath: a.redumperPath,
+		DataPath:        a.dataPath,
+		RedumperPath:    a.redumperPath,
+		DuckStationPath: a.duckstationPath,
 	})
 	if err != nil {
 		return err
@@ -488,6 +492,7 @@ func (a *App) startup(ctx context.Context) {
 			if json.Unmarshal(data, &s) == nil {
 				a.dataPath = s.DataPath
 				a.redumperPath = s.RedumperPath
+				a.duckstationPath = s.DuckStationPath
 			}
 		}
 	}
@@ -549,16 +554,21 @@ func (a *App) GetRoms() ([]models.VideoGameRom, error) {
 	return metadata.LoadAllRoms(a.metadataPath)
 }
 
+// romItemType resolves a ROM's _itemType (e.g. "NESRom", "PS1Rom") from its
+// item title, falling back to the generic "VideoGameRom" when unknown.
+func (a *App) romItemType(itemTitle string) string {
+	if a.store != nil {
+		if t, err := a.store.GetItemType(itemTitle); err == nil && t != "" {
+			return t
+		}
+	}
+	return "VideoGameRom"
+}
+
 // GetRom loads the full VideoGameRom JSON for a given item title.
 // Used by the ROM detail page, which needs fields not stored in the DB index.
 func (a *App) GetRom(itemTitle string) (*models.VideoGameRom, error) {
-	itemType := "VideoGameRom"
-	if a.store != nil {
-		if t, err := a.store.GetItemType(itemTitle); err == nil && t != "" {
-			itemType = t
-		}
-	}
-	return metadata.LoadOneRom(a.metadataPath, itemTitle, itemType)
+	return metadata.LoadOneRom(a.metadataPath, itemTitle, a.romItemType(itemTitle))
 }
 
 // GetRomFilePaths returns md5 → local file path for all format files of a ROM
@@ -586,6 +596,17 @@ func (a *App) GetRomLibraryStatus() (map[string]bool, error) {
 		result[rom.ItemTitle] = err == nil && len(hashes) > 0
 	}
 	return result, nil
+}
+
+// romDir returns the user-library folder for a ROM item.
+func (a *App) romDir(itemTitle string) string {
+	return filepath.Join(a.dataPath, a.romItemType(itemTitle), itemTitle)
+}
+
+// GetRomState returns the persisted play-tracking state for a ROM, or nil if
+// it has never been launched.
+func (a *App) GetRomState(itemTitle string) (*models.RomState, error) {
+	return metadata.ReadRomState(a.romDir(itemTitle))
 }
 
 // GetInstallState returns the install state for a VideoGameVersion, or nil if not yet installed.
@@ -1155,6 +1176,125 @@ func (a *App) LaunchVersion(itemTitle string, executablePath string) error {
 	return nil
 }
 
+// emulatorLaunchCommand resolves the emulator executable and launch arguments
+// for a ROM platform (_itemType). PortForge is opinionated about which emulator
+// to use per platform — DuckStation is currently the only one supported, for PS1.
+func (a *App) emulatorLaunchCommand(itemType, romPath string) (path string, args []string, err error) {
+	switch itemType {
+	case "PS1Rom":
+		if a.duckstationPath == "" {
+			return "", nil, fmt.Errorf("DuckStation is not configured — set its path in Settings")
+		}
+		return a.duckstationPath, duckStationLaunchArgs(romPath), nil
+	default:
+		return "", nil, fmt.Errorf("PortForge doesn't support an emulator for %s yet", itemType)
+	}
+}
+
+// LaunchRom launches a ROM file with its configured emulator. If formatFilename
+// is given, that specific format is launched (when present in the library);
+// otherwise the ROM's last-launched format is preferred, falling back to the
+// first format that's present.
+func (a *App) LaunchRom(itemTitle string, formatFilename string) error {
+	itemType := a.romItemType(itemTitle)
+	romDir := a.romDir(itemTitle)
+
+	rom, err := metadata.LoadOneRom(a.metadataPath, itemTitle, itemType)
+	if err != nil {
+		return err
+	}
+	if rom == nil {
+		return fmt.Errorf("ROM not found: %s", itemTitle)
+	}
+
+	filePaths, err := a.GetRomFilePaths(itemTitle)
+	if err != nil {
+		return err
+	}
+	if len(filePaths) == 0 {
+		return fmt.Errorf("no ROM files in library for %s", itemTitle)
+	}
+
+	state, err := metadata.ReadRomState(romDir)
+	if err != nil {
+		return err
+	}
+	if state == nil {
+		state = &models.RomState{}
+	}
+
+	preferred := formatFilename
+	if preferred == "" {
+		preferred = state.LastFormat
+	}
+
+	var target *models.ROMFormat
+	if preferred != "" {
+		for i := range rom.Formats {
+			if rom.Formats[i].Filename == preferred {
+				if _, present := filePaths[strings.ToLower(rom.Formats[i].Checksums.MD5)]; present {
+					target = &rom.Formats[i]
+				}
+				break
+			}
+		}
+	}
+	if target == nil {
+		for i := range rom.Formats {
+			if _, present := filePaths[strings.ToLower(rom.Formats[i].Checksums.MD5)]; present {
+				target = &rom.Formats[i]
+				break
+			}
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("ROM file not found in library: %s", itemTitle)
+	}
+
+	romPath := filePaths[strings.ToLower(target.Checksums.MD5)]
+	absPath, err := filepath.Abs(romPath)
+	if err != nil {
+		return err
+	}
+
+	emulatorPath, emulatorArgs, err := a.emulatorLaunchCommand(itemType, absPath)
+	if err != nil {
+		return err
+	}
+
+	cmd := newCommand(emulatorPath, emulatorArgs...)
+	cmd.Dir = filepath.Dir(absPath)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	wailsruntime.EventsEmit(a.ctx, "rom:started", map[string]interface{}{
+		"itemTitle": itemTitle,
+	})
+
+	state.LastFormat = target.Filename
+	_ = metadata.WriteRomState(romDir, state)
+
+	startTime := time.Now()
+	go func() {
+		cmd.Wait()
+		playSeconds := int64(time.Since(startTime).Seconds())
+
+		if s, err := metadata.ReadRomState(romDir); err == nil && s != nil {
+			s.TotalPlaySeconds += playSeconds
+			s.LastPlayedAt = time.Now().UTC().Format(time.RFC3339)
+			metadata.WriteRomState(romDir, s)
+		}
+
+		wailsruntime.EventsEmit(a.ctx, "rom:ended", map[string]interface{}{
+			"itemTitle":   itemTitle,
+			"playSeconds": playSeconds,
+		})
+	}()
+
+	return nil
+}
+
 // GetROMStatus returns MD5 → present for every format needed by a version's ROM dependencies.
 func (a *App) GetROMStatus(itemTitle string) (map[string]bool, error) {
 	version, err := metadata.LoadOneVersion(a.metadataPath, itemTitle)
@@ -1185,11 +1325,12 @@ func (a *App) GetROMStatus(itemTitle string) (map[string]bool, error) {
 // MatchDroppedROMs calculates the MD5 of each dropped file and compares it
 // against every VideoGameRom format in the library. Returns matched and unmatched files.
 func (a *App) MatchDroppedROMs(paths []string) (*models.ROMDropSummary, error) {
-	// Build md5 → {itemTitle, ext, itemType} index from the DB when available.
+	// Build md5 → {itemTitle, ext, itemType, filename} index from the DB when available.
 	type romEntry struct {
 		romTitle  string
 		romType   string
 		formatExt string
+		filename  string
 	}
 	index := make(map[string]romEntry)
 
@@ -1199,7 +1340,7 @@ func (a *App) MatchDroppedROMs(paths []string) (*models.ROMDropSummary, error) {
 			return nil, err
 		}
 		for md5, e := range dbIndex {
-			index[md5] = romEntry{e.ItemTitle, e.ItemType, e.Ext}
+			index[md5] = romEntry{e.ItemTitle, e.ItemType, e.Ext, e.Filename}
 		}
 	} else {
 		allRoms, err := metadata.LoadAllRoms(a.metadataPath)
@@ -1209,7 +1350,7 @@ func (a *App) MatchDroppedROMs(paths []string) (*models.ROMDropSummary, error) {
 		for _, rom := range allRoms {
 			for _, f := range rom.Formats {
 				if f.Checksums.MD5 != "" {
-					index[strings.ToLower(f.Checksums.MD5)] = romEntry{rom.ItemTitle, rom.ItemType, f.Ext}
+					index[strings.ToLower(f.Checksums.MD5)] = romEntry{rom.ItemTitle, rom.ItemType, f.Ext, f.Filename}
 				}
 			}
 		}
@@ -1224,11 +1365,12 @@ func (a *App) MatchDroppedROMs(paths []string) (*models.ROMDropSummary, error) {
 		}
 		if entry, ok := index[strings.ToLower(hash)]; ok {
 			result.Matched = append(result.Matched, models.ROMFileMatch{
-				FilePath:  path,
-				FileName:  filepath.Base(path),
-				ROMTitle:  entry.romTitle,
-				ROMType:   entry.romType,
-				FormatExt: entry.formatExt,
+				FilePath:       path,
+				FileName:       filepath.Base(path),
+				ROMTitle:       entry.romTitle,
+				ROMType:        entry.romType,
+				FormatExt:      entry.formatExt,
+				FormatFilename: entry.filename,
 			})
 		} else {
 			result.Unmatched = append(result.Unmatched, filepath.Base(path))
@@ -1248,7 +1390,17 @@ func (a *App) ImportROMs(matches []models.ROMFileMatch, move bool) error {
 		if err := os.MkdirAll(destDir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory for %s: %w", m.ROMTitle, err)
 		}
-		dest := filepath.Join(destDir, m.FileName)
+
+		// Rename to the catalog's canonical filename, but keep the dropped
+		// file's actual extension in case it differs from the catalog entry.
+		destName := m.FileName
+		if m.FormatFilename != "" {
+			ext := filepath.Ext(m.FileName)
+			stem := strings.TrimSuffix(m.FormatFilename, filepath.Ext(m.FormatFilename))
+			destName = stem + ext
+		}
+
+		dest := filepath.Join(destDir, destName)
 		if move {
 			if err := os.Rename(m.FilePath, dest); err != nil {
 				if err2 := copyFile(m.FilePath, dest); err2 != nil {
@@ -1261,7 +1413,6 @@ func (a *App) ImportROMs(matches []models.ROMFileMatch, move bool) error {
 				return fmt.Errorf("failed to copy %s: %w", m.FileName, err)
 			}
 		}
-		_ = a.copyToUserLibrary(romType, m.ROMTitle)
 	}
 	if a.store != nil {
 		_ = a.store.SyncUserROMs(a.dataPath)

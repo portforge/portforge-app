@@ -34,6 +34,13 @@ func listOpticalDrives() ([]models.OpticalDrive, error) {
 	return drives, nil
 }
 
+// unmountDrive is a no-op on Windows — raw access to a CD-ROM device
+// (\\.\D:) does not conflict with a mounted volume the way it does on
+// Linux/macOS, so there is nothing to release before dumping.
+func unmountDrive(devicePath, mountPoint string) error {
+	return nil
+}
+
 // readDiscLabel attempts to read the volume label from a CD-ROM drive.
 // Returns (false, "X:") if no disc is present.
 func readDiscLabel(root string) (hasDisc bool, label string) {

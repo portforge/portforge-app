@@ -3,6 +3,7 @@ export namespace main {
 	export class Settings {
 	    dataPath: string;
 	    redumperPath?: string;
+	    duckstationPath?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -12,6 +13,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.dataPath = source["dataPath"];
 	        this.redumperPath = source["redumperPath"];
+	        this.duckstationPath = source["duckstationPath"];
 	    }
 	}
 
@@ -392,6 +394,7 @@ export namespace models {
 	    romTitle: string;
 	    romType: string;
 	    formatExt: string;
+	    formatFilename: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ROMFileMatch(source);
@@ -404,6 +407,7 @@ export namespace models {
 	        this.romTitle = source["romTitle"];
 	        this.romType = source["romType"];
 	        this.formatExt = source["formatExt"];
+	        this.formatFilename = source["formatFilename"];
 	    }
 	}
 	export class ROMDropSummary {
@@ -440,6 +444,22 @@ export namespace models {
 	}
 	
 	
+	export class RomState {
+	    lastFormat?: string;
+	    totalPlaySeconds: number;
+	    lastPlayedAt?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RomState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.lastFormat = source["lastFormat"];
+	        this.totalPlaySeconds = source["totalPlaySeconds"];
+	        this.lastPlayedAt = source["lastPlayedAt"];
+	    }
+	}
 	export class VideoGame {
 	    _itemType: string;
 	    _schemaVersion: string;

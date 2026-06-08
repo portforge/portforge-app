@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { gamingPlatforms } from '../utils/platforms.js'
 
 const props = defineProps({
   roms:   { type: Array,  required: true },
@@ -7,20 +8,6 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['select'])
-
-const gamingPlatforms = [
-  {
-    title:         'Nintendo Entertainment System',
-    logoPath:      '/platforms/nes-logo.png',
-    backdropPath:  '/platforms/nes-banner.png',
-    gamesItemType: 'NESRom',
-  }, {
-    title:         'Nintendo 64',
-    logoPath:      '/platforms/n64-logo.png',
-    backdropPath:  '/platforms/n64-banner.png',
-    gamesItemType: 'N64Rom',
-  },
-]
 
 function romCount(platform) {
   return props.roms.filter(
@@ -142,8 +129,8 @@ function romCount(platform) {
   height: 100%;
 
   img {
-    max-width: 60%;
-    max-height: 55%;
+    max-width: 80%;
+    max-height: 50%;
     object-fit: contain;
     // filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.7));
   }

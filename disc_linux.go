@@ -4,7 +4,9 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 
@@ -77,6 +79,21 @@ func isDriveReady(device string) bool {
 	defer syscall.Close(fd)
 	r1, _, _ := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), cdromDriveStatus, cdslCurrent)
 	return r1 == cdsDiscOK
+}
+
+// unmountDrive unmounts the disc's filesystem so redumper can open the device
+// for exclusive raw SCSI access. udisksctl is used instead of umount(8)
+// because it talks to the udisks2 daemon over D-Bus, which (via polkit) lets
+// the active session user unmount removable media without root.
+func unmountDrive(devicePath, mountPoint string) error {
+	out, err := exec.Command("udisksctl", "unmount", "-b", devicePath).CombinedOutput()
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // getMountPoint returns the current mount point for a device by reading

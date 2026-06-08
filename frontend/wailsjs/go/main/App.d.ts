@@ -17,6 +17,8 @@ export function GetActiveInstall():Promise<string>;
 
 export function GetDefaultPaths():Promise<Record<string, string>>;
 
+export function GetDuckStationPath():Promise<string>;
+
 export function GetGames():Promise<Array<models.VideoGame>>;
 
 export function GetInstallPrompts(arg1:string):Promise<Array<models.ArgPrompt>>;
@@ -43,6 +45,8 @@ export function GetRomFilePaths(arg1:string):Promise<Record<string, string>>;
 
 export function GetRomLibraryStatus():Promise<Record<string, boolean>>;
 
+export function GetRomState(arg1:string):Promise<models.RomState>;
+
 export function GetRoms():Promise<Array<models.VideoGameRom>>;
 
 export function GetSettings():Promise<main.Settings>;
@@ -57,6 +61,8 @@ export function InstallVersion(arg1:string,arg2:Record<string, string>):Promise<
 
 export function IsDevMode():Promise<boolean>;
 
+export function LaunchRom(arg1:string,arg2:string):Promise<void>;
+
 export function LaunchVersion(arg1:string,arg2:string):Promise<void>;
 
 export function MatchDroppedROMs(arg1:Array<string>):Promise<models.ROMDropSummary>;
@@ -70,6 +76,8 @@ export function ScanDiscs():Promise<Array<models.OpticalDrive>>;
 export function SelectExecutable():Promise<string>;
 
 export function SelectFolder():Promise<string>;
+
+export function SetDuckStationPath(arg1:string):Promise<void>;
 
 export function SetRedumperPath(arg1:string):Promise<void>;
 

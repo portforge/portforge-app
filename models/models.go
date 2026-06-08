@@ -39,11 +39,12 @@ type Platform struct {
 
 // ROMFileMatch describes a dropped file that was matched to a known ROM format.
 type ROMFileMatch struct {
-	FilePath  string `json:"filePath"`  // absolute path of the dropped file
-	FileName  string `json:"fileName"`  // base name for display
-	ROMTitle  string `json:"romTitle"`  // _itemTitle of the matching VideoGameRom
-	ROMType   string `json:"romType"`   // _itemType of the matching ROM
-	FormatExt string `json:"formatExt"` // file extension for display
+	FilePath       string `json:"filePath"`       // absolute path of the dropped file
+	FileName       string `json:"fileName"`       // base name for display
+	ROMTitle       string `json:"romTitle"`       // _itemTitle of the matching VideoGameRom
+	ROMType        string `json:"romType"`        // _itemType of the matching ROM
+	FormatExt      string `json:"formatExt"`      // file extension for display
+	FormatFilename string `json:"formatFilename"` // canonical filename from the matched format, used to rename on import
 }
 
 // ROMDropSummary is returned by MatchDroppedROMs.
@@ -137,6 +138,14 @@ type InstallState struct {
 	InstalledAt      string            `json:"installedAt"`
 	TotalPlaySeconds int64             `json:"totalPlaySeconds"`
 	LastPlayedAt     string            `json:"lastPlayedAt,omitempty"`
+}
+
+// RomState is the persisted .state/meta.json for a VideoGameRom: play tracking
+// plus the last format launched (so Play can default to it next time).
+type RomState struct {
+	LastFormat       string `json:"lastFormat,omitempty"`
+	TotalPlaySeconds int64  `json:"totalPlaySeconds"`
+	LastPlayedAt     string `json:"lastPlayedAt,omitempty"`
 }
 
 type Mod struct {

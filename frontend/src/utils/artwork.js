@@ -9,12 +9,16 @@ const RATIOS = {
   'cover':       '2 / 3',
   'n64boxfront': '1.37 / 1',
   'nesboxfront': '3 / 4',
+  'xbox360boxfront': '0.71 / 1',
+  'ps1boxfront': '1 / 1',
 }
 
 /** Default artworkType per MediaItem _itemType (lowercase keys). */
 const DEFAULT_BY_ITEM_TYPE = {
   'n64rom':  'N64BoxFront',
   'nesrom':  'NESBoxFront',
+  'xbox360rom':  'Xbox360BoxFront',
+  'ps1rom':  'PS1BoxFront',
 }
 
 /** CSS aspect-ratio string for a given artworkType name. Falls back to Cover ratio. */

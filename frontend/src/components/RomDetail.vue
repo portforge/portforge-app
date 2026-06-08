@@ -1,6 +1,9 @@
 <script setup>
 import { ref, watch, computed } from 'vue'
-import { GetRom, GetRomFilePaths } from '../../wailsjs/go/main/App'
+import {
+  GetRom, GetRomFilePaths, GetRomState,
+  LaunchRom, GetDuckStationPath, SetDuckStationPath, SelectExecutable,
+} from '../../wailsjs/go/main/App'
 import { artworkAspectRatio, primaryArtwork, defaultArtworkType } from '../utils/artwork.js'
 
 const props = defineProps({
@@ -11,19 +14,98 @@ const emit = defineEmits(['back'])
 
 const enc = encodeURIComponent
 
+// PortForge is opinionated about which emulator handles each platform — this
+// mirrors the backend's emulatorLaunchCommand dispatch in app.go.
+const PLATFORM_EMULATORS = {
+  PS1Rom: { name: 'DuckStation', get: GetDuckStationPath, set: SetDuckStationPath },
+}
+
 const fullRom   = ref(null)
 const filePaths = ref({})
+const romState  = ref(null)
+
+const emulatorPath = ref('')
+
+const launching    = ref(false)
+const launchError  = ref(null)
+const showFormatMenu = ref(false)
+
+const showSetupForm = ref(false)
+const setupPath     = ref('')
 
 async function loadDetail() {
-  const [romResult, pathResult] = await Promise.allSettled([
+  const [romResult, pathResult, stateResult] = await Promise.allSettled([
     GetRom(props.rom._itemTitle),
     GetRomFilePaths(props.rom._itemTitle),
+    GetRomState(props.rom._itemTitle),
   ])
   fullRom.value   = romResult.status === 'fulfilled' ? romResult.value : props.rom
   filePaths.value = pathResult.status === 'fulfilled' ? pathResult.value ?? {} : {}
+  romState.value  = stateResult.status === 'fulfilled' ? stateResult.value : null
+
+  emulatorPath.value = ''
+  const emulator = PLATFORM_EMULATORS[(fullRom.value ?? props.rom)._itemType]
+  if (emulator) {
+    emulatorPath.value = await emulator.get().catch(() => '')
+  }
+  setupPath.value      = emulatorPath.value
+  showSetupForm.value  = false
+  showFormatMenu.value = false
+  launchError.value    = null
 }
 
 watch(() => props.rom, loadDetail, { immediate: true })
+
+const emulator = computed(() => PLATFORM_EMULATORS[(fullRom.value ?? props.rom)._itemType] ?? null)
+
+const presentFormats = computed(() => {
+  const source = fullRom.value ?? props.rom
+  return (source.formats ?? []).filter(isPresent)
+})
+
+// The format that Play launches by default: the last-launched one if it's still
+// present, otherwise the first present format.
+const primaryFormat = computed(() => {
+  if (!presentFormats.value.length) return null
+  const last = romState.value?.lastFormat
+  return presentFormats.value.find(f => f.filename === last) ?? presentFormats.value[0]
+})
+
+const extraFormats = computed(() =>
+  presentFormats.value.filter(f => f !== primaryFormat.value)
+)
+
+async function play(formatFilename = '') {
+  showFormatMenu.value = false
+  launchError.value = null
+  launching.value = true
+  try {
+    await LaunchRom(props.rom._itemTitle, formatFilename)
+  } catch (e) {
+    launchError.value = String(e)
+  } finally {
+    launching.value = false
+  }
+}
+
+async function browseSetupEmulator() {
+  const chosen = await SelectExecutable().catch(() => null)
+  if (chosen) {
+    setupPath.value = chosen
+    await saveSetup()
+  }
+}
+
+async function saveSetup() {
+  if (!emulator.value || !setupPath.value) return
+  try {
+    await emulator.value.set(setupPath.value)
+    emulatorPath.value = setupPath.value
+    showSetupForm.value = false
+  } catch (e) {
+    launchError.value = String(e)
+  }
+}
 
 const coverArtwork = computed(() => {
   const source = fullRom.value ?? props.rom
@@ -88,6 +170,67 @@ function basename(path) {
         <div class="detail-info">
           <h1 class="detail-title">{{ fullRom?.title || rom._itemTitle }}</h1>
           <span v-if="fullRom?.platform" class="platform-tag">{{ fullRom.platform }}</span>
+
+          <!-- Play area -->
+          <div class="action-area">
+            <p v-if="!presentFormats.length" class="action-notice">
+              No ROM file in your library yet. Drop one onto this page to add it.
+            </p>
+
+            <template v-else-if="!emulator">
+              <p class="action-notice">PortForge doesn't support an emulator for this platform yet.</p>
+            </template>
+
+            <template v-else-if="!emulatorPath">
+              <p class="action-notice">{{ emulator.name }} isn't set up yet.</p>
+              <button v-if="!showSetupForm" class="btn-ghost-sm" @click="showSetupForm = true">Set up {{ emulator.name }}</button>
+            </template>
+
+            <template v-else>
+              <div class="btn-play-group">
+                <button class="btn-play" :disabled="launching" @click="play(primaryFormat?.filename ?? '')">
+                  {{ launching ? 'Launching…' : 'Play' }}
+                </button>
+                <button
+                  v-if="extraFormats.length"
+                  class="btn-play-arrow"
+                  @click="showFormatMenu = !showFormatMenu"
+                  title="More formats"
+                >&#9660;</button>
+                <div v-if="showFormatMenu" class="exe-menu">
+                  <button
+                    v-for="fmt in extraFormats"
+                    :key="fmt.filename"
+                    class="exe-menu-item"
+                    @click="play(fmt.filename)"
+                  >{{ fmt.format || fmt.ext }} — {{ basename(fmt.filename) }}</button>
+                </div>
+              </div>
+              <button
+                v-if="!showSetupForm"
+                class="btn-ghost-sm"
+                @click="showSetupForm = true"
+              >Change {{ emulator.name }} location</button>
+            </template>
+
+            <p v-if="launchError" class="action-notice error">{{ launchError }}</p>
+
+            <div v-if="showSetupForm" class="override-form">
+              <div class="override-row">
+                <input
+                  class="override-input"
+                  v-model="setupPath"
+                  :placeholder="`Path to ${emulator?.name ?? 'emulator'} executable`"
+                  spellcheck="false"
+                />
+                <button class="btn-ghost-sm" @click="browseSetupEmulator">Browse…</button>
+              </div>
+              <div class="override-row">
+                <button class="btn-ghost-sm" @click="saveSetup">Save</button>
+                <button class="btn-ghost-sm" @click="showSetupForm = false">Cancel</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -227,6 +370,129 @@ function basename(path) {
   border-radius: 4px;
   padding: 2px 8px;
   align-self: flex-start;
+}
+
+/* ── Play area ── */
+.action-area {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.action-notice {
+  font-size: 14px;
+  color: #8b929a;
+  margin: 0;
+
+  &.error { color: #e06c75; }
+}
+
+.btn-play-group {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.btn-play {
+  background: #50c878;
+  color: #0d1a0f;
+  border: none;
+  border-radius: 6px 0 0 6px;
+  padding: 10px 28px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:only-child { border-radius: 6px; }
+  &:hover:not(:disabled) { background: #65d98a; }
+  &:disabled { opacity: 0.6; cursor: default; }
+}
+
+.btn-play-arrow {
+  background: #3db865;
+  color: #0d1a0f;
+  border: none;
+  border-left: 1px solid rgba(0,0,0,0.15);
+  border-radius: 0 6px 6px 0;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+
+  &:hover { background: #4acc73; }
+}
+
+.exe-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: #363636;
+  border: 1px solid #434343;
+  border-radius: 6px;
+  overflow: hidden;
+  z-index: 20;
+  min-width: 220px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+.exe-menu-item {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  color: #b4b4b4;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 14px;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover { background: #343434; color: #e8e8e8; }
+}
+
+.btn-ghost-sm {
+  background: none;
+  color: #888888;
+  border: 1px solid #565656;
+  border-radius: 4px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+
+  &:hover { color: #c8c8c8; border-color: #565656; }
+}
+
+.override-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.override-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.override-input {
+  flex: 1;
+  font: inherit;
+  font-size: 13px;
+  color: #b4b4b4;
+  background: #323232;
+  border: 1px solid #4e4e4e;
+  border-radius: 6px;
+  padding: 8px 12px;
+  outline: none;
+  min-width: 0;
+
+  &::placeholder { color: #6e6e6e; }
 }
 
 .format-pills {

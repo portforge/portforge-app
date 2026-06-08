@@ -127,7 +127,7 @@ func ScanROMs(itemDir string) (map[string]string, error) {
 }
 
 // RomItemTypes is the list of known ROM MediaItem directory names.
-var RomItemTypes = []string{"VideoGameRom", "N64Rom", "NESRom"}
+var RomItemTypes = []string{"VideoGameRom", "N64Rom", "NESRom", "PS1Rom", "Xbox360Rom"}
 
 // LoadAllRoms reads all ROM mediaitem directories across all known ROM item types.
 func LoadAllRoms(baseDir string) ([]models.VideoGameRom, error) {
@@ -288,6 +288,36 @@ func ReadInstallState(versionDir string) (*models.InstallState, error) {
 // WriteInstallState writes .state/meta.json for a VideoGameVersion.
 func WriteInstallState(versionDir string, state *models.InstallState) error {
 	dir := filepath.Join(versionDir, ".state")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "meta.json"), data, 0644)
+}
+
+// ReadRomState reads .state/meta.json for a VideoGameRom, if present.
+// Returns nil (no error) if the file doesn't exist yet.
+func ReadRomState(romDir string) (*models.RomState, error) {
+	data, err := os.ReadFile(filepath.Join(romDir, ".state", "meta.json"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var state models.RomState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+// WriteRomState writes .state/meta.json for a VideoGameRom.
+func WriteRomState(romDir string, state *models.RomState) error {
+	dir := filepath.Join(romDir, ".state")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}

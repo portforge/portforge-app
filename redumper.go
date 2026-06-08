@@ -50,10 +50,12 @@ func (a *App) StartDump(drive, imageName string) error {
 	if err != nil {
 		return fmt.Errorf("cannot enumerate drives: %w", err)
 	}
+	var mountPoint string
 	valid := false
 	for _, d := range known {
 		if d.Path == drive {
 			valid = true
+			mountPoint = d.MountPoint
 			break
 		}
 	}
@@ -79,7 +81,7 @@ func (a *App) StartDump(drive, imageName string) error {
 		return fmt.Errorf("cannot create dump directory: %w", err)
 	}
 
-	go a.runRedumper(ctx, cancel, redumperBin, drive, outDir, imageName)
+	go a.runRedumper(ctx, cancel, redumperBin, drive, mountPoint, outDir, imageName)
 	return nil
 }
 
@@ -96,7 +98,7 @@ func (a *App) CancelDump() {
 func (a *App) runRedumper(
 	ctx context.Context,
 	cancel context.CancelFunc,
-	bin, drive, outDir, imageName string,
+	bin, drive, mountPoint, outDir, imageName string,
 ) {
 	defer func() {
 		cancel()
@@ -107,6 +109,17 @@ func (a *App) runRedumper(
 
 	emit := func(p models.DumpProgress) {
 		wailsruntime.EventsEmit(a.ctx, "dump:progress", p)
+	}
+
+	// redumper needs exclusive raw access to the device. If the OS has
+	// auto-mounted the disc's filesystem, opening it fails with "device or
+	// resource busy" — so unmount it first.
+	if mountPoint != "" {
+		if err := unmountDrive(drive, mountPoint); err != nil {
+			emit(models.DumpProgress{Drive: drive, Phase: "error",
+				Error: fmt.Sprintf("could not unmount disc before dumping: %s", err)})
+			return
+		}
 	}
 
 	// Sanitise the image name for the filesystem.
@@ -141,6 +154,7 @@ func (a *App) runRedumper(
 	combined := io.MultiReader(stdout, stderr)
 	scanner := bufio.NewScanner(combined)
 	var lastPct float64
+	var recentLines []string
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -150,6 +164,13 @@ func (a *App) runRedumper(
 				lastPct = pct
 				emit(models.DumpProgress{Drive: drive, Phase: "dumping", Percent: pct})
 			}
+			continue
+		}
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			recentLines = append(recentLines, trimmed)
+			if len(recentLines) > 5 {
+				recentLines = recentLines[1:]
+			}
 		}
 	}
 
@@ -157,7 +178,11 @@ func (a *App) runRedumper(
 		if ctx.Err() != nil {
 			return // user cancelled
 		}
-		emit(models.DumpProgress{Drive: drive, Phase: "error", Error: err.Error()})
+		msg := err.Error()
+		if len(recentLines) > 0 {
+			msg = strings.Join(recentLines, "\n")
+		}
+		emit(models.DumpProgress{Drive: drive, Phase: "error", Error: msg})
 		return
 	}
 

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -42,6 +43,20 @@ func listOpticalDrives() ([]models.OpticalDrive, error) {
 		})
 	}
 	return drives, nil
+}
+
+// unmountDrive unmounts the disc's volume so redumper can open the raw device
+// for exclusive access — macOS refuses raw reads of a mounted optical volume
+// with "resource busy".
+func unmountDrive(devicePath, mountPoint string) error {
+	out, err := exec.Command("diskutil", "unmount", mountPoint).CombinedOutput()
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // getOpticalDeviceInfo runs "diskutil info <volPath>" and checks whether the
