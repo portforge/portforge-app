@@ -1,0 +1,289 @@
+/*
+ * Design tokens for the PortForge UI.
+ *
+ * Light is the default palette on :root. Dark is applied by setting
+ * data-theme="dark" on <html>; useTheme.js always writes a concrete value there,
+ * so there is no third "system" state to reason about in CSS — the OS preference
+ * is resolved to light or dark once, on first run.
+ */
+
+/* ── Fonts ─────────────────────────────────────────────────────────────────
+ * Bundled rather than loaded from the Google Fonts CDN: this is a desktop app
+ * and has to render correctly offline. Outfit is a variable font, so one file
+ * covers the whole 300–700 range the design uses.
+ */
+@font-face {
+  font-family: "Outfit";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: block;
+  src: url("../assets/fonts/outfit-var-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Outfit";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: block;
+  src: url("../assets/fonts/outfit-var-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("../assets/fonts/plex-mono-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("../assets/fonts/plex-mono-400-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url("../assets/fonts/plex-mono-500-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url("../assets/fonts/plex-mono-500-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── Palette: light ───────────────────────────────────────────────────────── */
+:root {
+  --bg: #f4f4f1;
+  --panel: #ffffff;
+  --panel2: #ebebe7;
+  --panel3: #e0e0db;
+
+  --line: rgba(20, 20, 15, 0.1);
+  --line2: rgba(20, 20, 15, 0.16);
+
+  --text: #191918;
+  --dim: #6f6f68;
+  --dim2: #93938b;
+
+  --accent: oklch(0.55 0.15 258);
+  --accent-hi: oklch(0.47 0.16 258);
+  --accent-soft: oklch(0.95 0.03 258);
+
+  --ok: oklch(0.55 0.14 150);
+  --bad: oklch(0.55 0.18 27);
+  --warn: oklch(0.62 0.14 75);
+
+  --shadow: 0 1px 2px rgba(20, 20, 15, 0.06), 0 8px 24px rgba(20, 20, 15, 0.06);
+  --scrim: linear-gradient(
+    to top,
+    rgba(255, 255, 255, 0.98) 8%,
+    rgba(255, 255, 255, 0.82) 45%,
+    rgba(255, 255, 255, 0.15) 100%
+  );
+
+  /* Buttons sitting on --accent keep white text in both themes. */
+  --on-accent: #ffffff;
+
+  /* ── Non-colour tokens (identical across themes) ── */
+  --font-ui: "Outfit", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --r-panel: 13px;
+  --r-card: 12px;
+  --r-control: 9px;
+  --r-tile: 8px;
+  --r-pill: 999px;
+
+  /* Imagery is rounded less than the chrome around it, so artwork reads as
+     artwork rather than as another panel. Never reuse the chrome radii above
+     on a cover, screenshot or thumbnail. */
+  --r-cover: 6px;
+  --r-shot: 5px;
+  --r-thumb: 4px;
+
+  --pad-page: 28px;
+
+  --t-lift: transform 140ms ease, box-shadow 140ms ease;
+  --t-bg: background 120ms ease;
+}
+
+/* ── Palette: dark ────────────────────────────────────────────────────────── */
+:root[data-theme="dark"] {
+  --bg: #101011;
+  --panel: #18181a;
+  --panel2: #212124;
+  --panel3: #2b2b2f;
+
+  --line: rgba(255, 255, 255, 0.09);
+  --line2: rgba(255, 255, 255, 0.16);
+
+  --text: #f0efec;
+  --dim: #9e9e97;
+  --dim2: #77776f;
+
+  --accent: oklch(0.72 0.14 258);
+  --accent-hi: oklch(0.8 0.13 258);
+  --accent-soft: oklch(0.3 0.07 258);
+
+  --ok: oklch(0.75 0.15 150);
+  --bad: oklch(0.68 0.17 27);
+  --warn: oklch(0.78 0.13 75);
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 32px rgba(0, 0, 0, 0.4);
+  --scrim: linear-gradient(
+    to top,
+    rgba(16, 16, 17, 0.98) 8%,
+    rgba(16, 16, 17, 0.85) 45%,
+    rgba(16, 16, 17, 0.15) 100%
+  );
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* The window chrome is ours; text selection on labels and buttons reads as a
+   web page rather than an application. Selection stays on for prose and mono. */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.selectable,
+code,
+pre {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line2);
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ── Shared primitives ────────────────────────────────────────────────────── */
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* Section label above a group of cards: "SCREENSHOTS", "PLATFORMS". */
+.eyebrow {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.page-title {
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+/* Striped stand-in for artwork the catalog has not supplied yet. Sized by the
+   caller; the stripe angle differs between covers and wide key art. */
+.art-placeholder {
+  position: relative;
+  background-color: var(--panel);
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--panel2) 0 7px,
+    transparent 7px 15px
+  );
+}
+
+.art-placeholder--wide {
+  background-color: var(--panel2);
+  background-image: repeating-linear-gradient(
+    115deg,
+    var(--panel3) 0 10px,
+    transparent 10px 22px
+  );
+}
+
+.art-placeholder__label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--dim2);
+  letter-spacing: 0.04em;
+}

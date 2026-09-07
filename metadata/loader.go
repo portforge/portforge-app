@@ -4,11 +4,14 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"portforge/models"
 	"strings"
+
+	"github.com/zamiba/forge/engine"
 )
 
 // LoadAll reads all mediaitem subdirectories and returns VideoGame items.
@@ -58,7 +61,7 @@ func LoadOne(baseDir, itemTitle string) (*models.VideoGame, error) {
 
 // LoadAllVersions reads all VideoGameVersion mediaitem directories.
 func LoadAllVersions(baseDir string) ([]models.VideoGameVersion, error) {
-	entries, err := os.ReadDir(filepath.Join(baseDir, "VideoGameVersion"))
+	entries, err := os.ReadDir(filepath.Join(baseDir, PortItemType))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -83,7 +86,7 @@ func LoadAllVersions(baseDir string) ([]models.VideoGameVersion, error) {
 
 // LoadOneVersion loads a single VideoGameVersion from its mediaitem directory.
 func LoadOneVersion(baseDir, itemTitle string) (*models.VideoGameVersion, error) {
-	jsonPath := filepath.Join(baseDir, "VideoGameVersion", itemTitle, ".mediaitem.json")
+	jsonPath := filepath.Join(baseDir, PortItemType, itemTitle, ".mediaitem.json")
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
 		return nil, err
@@ -94,11 +97,38 @@ func LoadOneVersion(baseDir, itemTitle string) (*models.VideoGameVersion, error)
 		return nil, err
 	}
 
-	if v.ItemType != "VideoGameVersion" {
+	if v.ItemType != PortItemType {
 		return nil, nil
 	}
 
+	v.Artwork = MergeArtworkDir(v.Artwork,
+		filepath.Join(baseDir, PortItemType, itemTitle, ".artwork"))
+
 	return &v, nil
+}
+
+// MergeArtworkDir returns the declared artwork entries plus any image in dir that
+// none of them names. Declared entries take precedence because they can carry
+// language and ordering detail a filename does not, but files found on disk are
+// still picked up — so dropping a new artwork type into .artwork/ is enough to
+// make it visible, without also hand-editing the JSON array.
+func MergeArtworkDir(declared []models.Artwork, dir string) []models.Artwork {
+	scanned := ScanArtworkDir(dir)
+	if len(scanned) == 0 {
+		return declared
+	}
+	named := make(map[string]bool, len(declared))
+	for _, a := range declared {
+		named[a.FileName] = true
+	}
+	out := make([]models.Artwork, len(declared), len(declared)+len(scanned))
+	copy(out, declared)
+	for _, a := range scanned {
+		if !named[a.FileName] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // ScanROMs returns a map of MD5 checksum → absolute file path for all non-hidden,
@@ -126,8 +156,24 @@ func ScanROMs(itemDir string) (map[string]string, error) {
 	return result, nil
 }
 
+// PortItemType is the ItemType of a playable port, and the name of the directory
+// both the catalog and the user library file them under.
+//
+// A port is a VideoGameFanPort rather than a plain VideoGameVersion because it
+// adds a field: romDependencies. A VideoGameVersion has no use for one — an
+// original release depends on no dumps — so the field is what makes the child
+// type earn its existence, per the standard's additive-only rule.
+const PortItemType = "VideoGameFanPort"
+
 // RomItemTypes is the list of known ROM MediaItem directory names.
-var RomItemTypes = []string{"VideoGameRom", "N64Rom", "NESRom", "PS1Rom", "Xbox360Rom"}
+//
+// The names follow the MediaItem standard, where an ItemFile type classifies the
+// medium a dump came off rather than the content on it — [Platform][Medium][Form],
+// so a cartridge dump is a CartRom and a disc dump a DiscImage. The medium is not
+// optional: "N64Rom" would also describe the console's own firmware, which is a
+// different type. What makes a dump "a game's ROM" is the reference graph — a
+// version's romDependencies pointing at it — not its type.
+var RomItemTypes = []string{"GBCartRom", "GBCCartRom", "N64CartRom", "NESCartRom", "PS1DiscImage", "Xbox360DiscImage"}
 
 // LoadAllRoms reads all ROM mediaitem directories across all known ROM item types.
 func LoadAllRoms(baseDir string) ([]models.VideoGameRom, error) {
@@ -155,8 +201,33 @@ func LoadAllRoms(baseDir string) ([]models.VideoGameRom, error) {
 	return roms, nil
 }
 
+// FindRomByTitle scans a single ROM item-type directory for a ROM whose title
+// matches. Used as a fallback when the SQLite store is not available.
+func FindRomByTitle(baseDir, itemType, title string) (*models.VideoGameRom, error) {
+	entries, err := os.ReadDir(filepath.Join(baseDir, itemType))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		r, err := LoadOneRom(baseDir, entry.Name(), itemType)
+		if err != nil || r == nil {
+			continue
+		}
+		if r.Title == title {
+			return r, nil
+		}
+	}
+	return nil, nil
+}
+
 // LoadOneRom loads a single VideoGameRom from its mediaitem directory.
-// itemType is the directory name (e.g. "VideoGameRom", "N64Rom", "NESRom").
+// itemType is the directory name (e.g. "VideoGameRom", "N64GameRom").
 // If the JSON contains no artwork entries the .artwork/ folder is scanned
 // automatically so callers always receive populated artwork when available.
 func LoadOneRom(baseDir, itemTitle, itemType string) (*models.VideoGameRom, error) {
@@ -171,6 +242,9 @@ func LoadOneRom(baseDir, itemTitle, itemType string) (*models.VideoGameRom, erro
 		return nil, err
 	}
 	r.ItemTitle = itemTitle
+	// Both identity fields come from the layout rather than the file, so a folder
+	// that is moved or a type that is renamed cannot disagree with its contents.
+	r.ItemType = itemType
 	if len(r.Artwork) == 0 {
 		r.Artwork = ScanArtworkDir(filepath.Join(baseDir, itemType, itemTitle, ".artwork"))
 	}
@@ -184,7 +258,8 @@ func LoadOneRom(baseDir, itemTitle, itemType string) (*models.VideoGameRom, erro
 //	[artworkType] · [langCode ·] [#].[ext]
 //
 // e.g. "Cover · en · 1.jpg" → artworkType "Cover"
-//      "N64BoxFront · 1.png" → artworkType "N64BoxFront"
+//
+//	"N64BoxFront · 1.png" → artworkType "N64BoxFront"
 func ScanArtworkDir(dir string) []models.Artwork {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -224,48 +299,58 @@ func artworkTypeFromFilename(filename string) string {
 }
 
 // ScanROMLibrary returns a combined MD5 → filepath map for all files across
-// all VideoGameRom subdirectories.
+// every ROM item type directory. A user's ROMs are filed by item type, so
+// scanning only VideoGameRom would miss every platform-specific one.
 func ScanROMLibrary(baseDir string) (map[string]string, error) {
-	romDir := filepath.Join(baseDir, "VideoGameRom")
-	entries, err := os.ReadDir(romDir)
-	if os.IsNotExist(err) {
-		return make(map[string]string), nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
 	result := make(map[string]string)
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, itemType := range RomItemTypes {
+		romDir := filepath.Join(baseDir, itemType)
+		entries, err := os.ReadDir(romDir)
+		if os.IsNotExist(err) {
 			continue
 		}
-		hashes, err := ScanROMs(filepath.Join(romDir, entry.Name()))
 		if err != nil {
-			continue
+			return nil, err
 		}
-		for hash, path := range hashes {
-			result[hash] = path
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			hashes, err := ScanROMs(filepath.Join(romDir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			for hash, path := range hashes {
+				result[hash] = path
+			}
 		}
 	}
 	return result, nil
 }
 
-// LoadInstallationSpecs reads the .install.json array for a VideoGameVersion.
-// Returns nil (no error) if the file doesn't exist.
-func LoadInstallationSpecs(baseDir, itemTitle string) ([]models.InstallationSpec, error) {
-	data, err := os.ReadFile(filepath.Join(baseDir, "VideoGameVersion", itemTitle, ".install.json"))
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
+// SpecFileName is the install spec a VideoGameVersion is built from.
+var SpecFileName = ".forge.json"
+
+// LoadSpecFile reads a VideoGameVersion's spec file, including the file-level
+// settings such as defaultVersion. A version with no spec file yields a nil
+// SpecFile and no error.
+func LoadSpecFile(baseDir, itemTitle string) (*engine.SpecFile, error) {
+	dir := filepath.Join(baseDir, PortItemType, itemTitle)
+	file, err := engine.LoadSpecFile(filepath.Join(dir, SpecFileName))
 	if err != nil {
+		return nil, fmt.Errorf("%s: %w", SpecFileName, err)
+	}
+	return file, nil
+}
+
+// LoadInstallationSpecs reads the builds a VideoGameVersion declares.
+// Returns nil (no error) if it has no spec file.
+func LoadInstallationSpecs(baseDir, itemTitle string) ([]engine.Spec, error) {
+	file, err := LoadSpecFile(baseDir, itemTitle)
+	if err != nil || file == nil {
 		return nil, err
 	}
-	var specs []models.InstallationSpec
-	if err := json.Unmarshal(data, &specs); err != nil {
-		return nil, err
-	}
-	return specs, nil
+	return file.Specs, nil
 }
 
 // ReadInstallState reads .state/meta.json for a VideoGameVersion, if present.
@@ -288,36 +373,6 @@ func ReadInstallState(versionDir string) (*models.InstallState, error) {
 // WriteInstallState writes .state/meta.json for a VideoGameVersion.
 func WriteInstallState(versionDir string, state *models.InstallState) error {
 	dir := filepath.Join(versionDir, ".state")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, "meta.json"), data, 0644)
-}
-
-// ReadRomState reads .state/meta.json for a VideoGameRom, if present.
-// Returns nil (no error) if the file doesn't exist yet.
-func ReadRomState(romDir string) (*models.RomState, error) {
-	data, err := os.ReadFile(filepath.Join(romDir, ".state", "meta.json"))
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var state models.RomState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, err
-	}
-	return &state, nil
-}
-
-// WriteRomState writes .state/meta.json for a VideoGameRom.
-func WriteRomState(romDir string, state *models.RomState) error {
-	dir := filepath.Join(romDir, ".state")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}

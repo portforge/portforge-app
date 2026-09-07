@@ -1,30 +1,26 @@
 <script setup>
 import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
-import { GetVersions, GetVersion, GetPlatform, GetRoms, GetRomLibraryStatus, GetActiveInstall, InstallVersion, CancelInstall, GetSettings, ValidateMediaItemsPath, MatchDroppedROMs, ImportROMs } from '../wailsjs/go/main/App'
+import { GetVersions, GetVersion, GetLibraryStatus, GetPlatform, GetActiveInstall, InstallVersion, CancelInstall, GetSettings, ValidateMediaItemsPath, MatchDroppedROMs, ImportROMs } from '../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
+import { artworkUrl, ART_WIDTH } from './lib/artwork'
+import Sidebar from './components/Sidebar.vue'
 import GameLibrary from './components/GameLibrary.vue'
 import GameDetail from './components/GameDetail.vue'
 import RomLibrary from './components/RomLibrary.vue'
-import RomPlatforms from './components/RomPlatforms.vue'
-import RomDetail from './components/RomDetail.vue'
-import DiscDumper from './components/DiscDumper.vue'
 import Settings from './components/Settings.vue'
 
-const isDev = import.meta.env.DEV
-
 const versions = ref([])
+const libraryStatus = ref({})
 const selectedGame = ref(null)
 const platform = ref('')
 const error = ref(null)
 const isDragging = ref(false)
 const activeTab = ref('library')
+// Bumped on import so an open ROM library reloads. The game page uses
+// _romRefresh on its own prop for the same reason.
+const romRefresh = ref(0)
 const needsSetup = ref(false)
 const libraryWarning = ref(null)
-
-const roms = ref([])
-const romStatus = ref({})
-const selectedRom      = ref(null)
-const selectedPlatform = ref(null)
 
 const pendingDrop = ref(null)  // ROMDropSummary from MatchDroppedROMs
 const dropError = ref(null)
@@ -34,14 +30,33 @@ const dropMatching = ref(false)
 // Persists across navigation so background installs are tracked app-wide.
 const activeInstall = ref(null) // { itemTitle, phase, percent, stepLabel, stepIndex, stepTotal, failed }
 
-async function startInstall(itemTitle, args = {}) {
+// Live build output for the running install. Capped because a compile can emit
+// tens of thousands of lines and only the tail is ever read on screen — the
+// complete output is written to install.log in the game's data folder.
+const INSTALL_LOG_MAX = 500
+const installLog = ref([])
+
+// Refreshes only the per-card status, not the catalog listing — used after events
+// that change a card's badge (an install finishing, ROMs being imported).
+async function refreshLibraryStatus() {
+  try {
+    libraryStatus.value = await GetLibraryStatus()
+  } catch { /* leave the previous status in place */ }
+}
+
+async function startInstall(itemTitle, args = {}, specVersion = '', targetPlatform = '') {
+  // The backend refuses a second concurrent install; bail before clobbering the
+  // state of the one already running.
+  if (activeInstall.value) return false
+  installLog.value = []
   activeInstall.value = {
     itemTitle, phase: 'downloading', percent: 0,
     stepLabel: null, stepIndex: 0, stepTotal: 0, failed: null,
   }
   try {
-    await InstallVersion(itemTitle, args)
+    await InstallVersion(itemTitle, args, specVersion, targetPlatform)
     activeInstall.value = null
+    await refreshLibraryStatus()
     return true
   } catch {
     if (activeInstall.value && !activeInstall.value.failed) {
@@ -56,6 +71,8 @@ function clearInstall() {
 }
 
 provide('activeInstall', activeInstall)
+provide('installLog', installLog)
+provide('installLogMax', INSTALL_LOG_MAX)
 provide('startInstall', startInstall)
 provide('clearInstall', clearInstall)
 provide('cancelInstall', CancelInstall)
@@ -98,7 +115,7 @@ const playingVersion = computed(() =>
 function coverUrl(version) {
   const art = version?.artwork?.find(a => a.artworkType.toLowerCase() === 'cover') ?? version?.artwork?.[0]
   if (!art) return null
-  return `/mediaitems/VideoGameVersion/${encodeURIComponent(version._itemTitle)}/.artwork/${encodeURIComponent(art.fileName)}`
+  return artworkUrl(version, art.fileName, ART_WIDTH.overlayCover)
 }
 
 function formatPlaytime(secs) {
@@ -113,13 +130,11 @@ function formatPlaytime(secs) {
 async function loadLibrary() {
   libraryWarning.value = await ValidateMediaItemsPath()
   try {
-    [versions.value, platform.value] = await Promise.all([GetVersions(), GetPlatform()])
+    [versions.value, platform.value, libraryStatus.value] =
+      await Promise.all([GetVersions(), GetPlatform(), GetLibraryStatus()])
   } catch (e) {
     error.value = String(e)
   }
-  try {
-    [roms.value, romStatus.value] = await Promise.all([GetRoms(), GetRomLibraryStatus()])
-  } catch { /* non-fatal */ }
 }
 
 async function onSettingsSaved() {
@@ -140,6 +155,7 @@ onMounted(async () => {
   // Recover any install that was already running (e.g. after a dev hot-reload)
   const recovering = await GetActiveInstall()
   if (recovering && !activeInstall.value) {
+    installLog.value = []
     activeInstall.value = { itemTitle: recovering, phase: 'building', percent: 0, stepLabel: null, stepIndex: 0, stepTotal: 0, failed: null }
   }
 
@@ -148,17 +164,29 @@ onMounted(async () => {
       activeInstall.value = { itemTitle, phase: 'downloading', percent: 0, stepLabel: null, stepIndex: 0, stepTotal: 0, failed: null }
     }
   })
-  EventsOn('install:progress', data => {
-    if (activeInstall.value) activeInstall.value = { ...activeInstall.value, ...data }
+  // Install events are tagged with the item they belong to. An event for anything
+  // other than the install we are tracking is stale — from a run that has already
+  // finished — so applying it would corrupt the current progress display.
+  const isActive = itemTitle => activeInstall.value && (!itemTitle || activeInstall.value.itemTitle === itemTitle)
+
+  EventsOn('install:progress', ({ itemTitle, ...data }) => {
+    if (isActive(itemTitle)) activeInstall.value = { ...activeInstall.value, ...data }
   })
-  EventsOn('install:step', ({ index, total, label }) => {
-    if (activeInstall.value) activeInstall.value = { ...activeInstall.value, stepIndex: index, stepTotal: total, stepLabel: label }
+  EventsOn('install:step', ({ itemTitle, index, total, label }) => {
+    if (isActive(itemTitle)) activeInstall.value = { ...activeInstall.value, stepIndex: index, stepTotal: total, stepLabel: label }
   })
-  EventsOn('install:failed', data => {
-    if (activeInstall.value) activeInstall.value = { ...activeInstall.value, failed: data }
+  EventsOn('install:log', ({ itemTitle, line, stream }) => {
+    if (!isActive(itemTitle)) return
+    installLog.value.push({ line, stream })
+    if (installLog.value.length > INSTALL_LOG_MAX) {
+      installLog.value.splice(0, installLog.value.length - INSTALL_LOG_MAX)
+    }
   })
-  EventsOn('install:cancelled', () => {
-    activeInstall.value = null
+  EventsOn('install:failed', ({ itemTitle, ...data }) => {
+    if (isActive(itemTitle)) activeInstall.value = { ...activeInstall.value, failed: data }
+  })
+  EventsOn('install:cancelled', (data) => {
+    if (isActive(data?.itemTitle)) activeInstall.value = null
   })
 
   EventsOn('wails:file-drop', handleFileDrop)
@@ -180,6 +208,7 @@ onUnmounted(() => {
   EventsOff('install:started')
   EventsOff('install:progress')
   EventsOff('install:step')
+  EventsOff('install:log')
   EventsOff('install:failed')
   EventsOff('install:cancelled')
   EventsOff('wails:file-drop')
@@ -215,11 +244,12 @@ async function confirmDrop(move) {
   if (!pendingDrop.value) return
   try {
     await ImportROMs(pendingDrop.value.matched, move)
-    // Refresh ROM status
-    try { romStatus.value = await GetRomLibraryStatus() } catch {}
     if (selectedGame.value) {
       selectedGame.value = { ...selectedGame.value, _romRefresh: Date.now() }
     }
+    romRefresh.value++
+    // Newly imported ROMs can flip cards out of "Missing ROM".
+    await refreshLibraryStatus()
   } catch (e) {
     dropError.value = String(e)
   } finally {
@@ -242,32 +272,11 @@ function dismissDrop() {
     @drop.prevent="isDragging = false"
     :class="{ dragging: isDragging }"
   >
-    <header>
-      <span class="app-title">PortForge</span>
-      <nav v-if="!needsSetup" class="tab-nav">
-        <button
-          class="tab-btn"
-          :class="{ active: activeTab === 'library' && !selectedGame }"
-          @click="activeTab = 'library'; selectedGame = null; selectedRom = null"
-        >Library</button>
-        <button
-          class="tab-btn"
-          :class="{ active: activeTab === 'roms' && !selectedRom }"
-          @click="activeTab = 'roms'; selectedGame = null; selectedRom = null; selectedPlatform = null"
-        >ROMs</button>
-        <button
-          v-if="isDev"
-          class="tab-btn"
-          :class="{ active: activeTab === 'dump' }"
-          @click="activeTab = 'dump'; selectedGame = null; selectedRom = null"
-        >Dump</button>
-        <button
-          class="tab-btn"
-          :class="{ active: activeTab === 'settings' }"
-          @click="activeTab = 'settings'; selectedGame = null; selectedRom = null"
-        >Settings</button>
-      </nav>
-    </header>
+    <Sidebar
+      v-if="!needsSetup"
+      :active="activeTab"
+      @navigate="tab => { activeTab = tab; selectedGame = null }"
+    />
 
     <div class="content-area">
       <div v-if="isDragging" class="drop-overlay">
@@ -310,22 +319,6 @@ function dismissDrop() {
         <button v-if="!activeInstall.failed" class="btn-stop-install" @click.stop="CancelInstall()">Stop</button>
       </div>
 
-      <div v-if="playingVersion" class="now-playing-overlay">
-        <div class="now-playing-card">
-          <img
-            v-if="coverUrl(playingVersion)"
-            :src="coverUrl(playingVersion)"
-            :alt="playingVersion.title || playingVersion._itemTitle"
-            class="now-playing-cover"
-          />
-          <div class="now-playing-info">
-            <span class="now-playing-label">Now Playing</span>
-            <span class="now-playing-title">{{ playingVersion.title || playingVersion._itemTitle }}</span>
-            <span class="now-playing-timer">{{ formatPlaytime(playSeconds) }}</span>
-          </div>
-        </div>
-      </div>
-
       <main>
         <Settings v-if="needsSetup" :setup="true" @saved="onSettingsSaved" @refreshed="loadLibrary" />
         <template v-else>
@@ -336,63 +329,49 @@ function dismissDrop() {
             :platform="platform"
             @back="selectedGame = null"
           />
+          <RomLibrary
+            v-else-if="activeTab === 'roms'"
+            :refresh-key="romRefresh"
+          />
           <Settings
             v-else-if="activeTab === 'settings'"
             @saved="onSettingsSaved" @refreshed="loadLibrary"
           />
-          <DiscDumper
-            v-else-if="isDev && activeTab === 'dump'"
-          />
-          <RomDetail
-            v-else-if="activeTab === 'roms' && selectedRom"
-            :rom="selectedRom"
-            @back="selectedRom = null"
-          />
-          <RomLibrary
-            v-else-if="activeTab === 'roms' && selectedPlatform"
-            :roms="roms"
-            :status="romStatus"
-            :platform="selectedPlatform"
-            @select="r => { selectedRom = r }"
-            @back="selectedPlatform = null"
-          />
-          <RomPlatforms
-            v-else-if="activeTab === 'roms'"
-            :roms="roms"
-            :status="romStatus"
-            @select="p => { selectedPlatform = p }"
-          />
           <GameLibrary
             v-else
             :versions="versions"
+            :status="libraryStatus"
             @select="v => GetVersion(v._itemTitle).then(full => { selectedGame = full ?? v }).catch(() => { selectedGame = v })"
           />
         </template>
       </main>
     </div>
+
+    <!-- A child of the shell rather than the content area: this covers the whole
+         window, sidebar included. Positioned inside the content area it stopped
+         at the sidebar's edge, which left the nav lit and clickable underneath a
+         screen whose whole point is that the game has taken over. -->
+    <div v-if="playingVersion" class="now-playing-overlay">
+      <div class="now-playing-card">
+        <img
+          v-if="coverUrl(playingVersion)"
+          :src="coverUrl(playingVersion)"
+          :alt="playingVersion.title || playingVersion._itemTitle"
+          class="now-playing-cover"
+        />
+        <div class="now-playing-info">
+          <span class="now-playing-label">Now Playing</span>
+          <span class="now-playing-title">{{ playingVersion.title || playingVersion._itemTitle }}</span>
+          <span class="now-playing-timer">{{ formatPlaytime(playSeconds) }}</span>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
-<style>
-*, *::before, *::after {
-  box-sizing: border-box;
-}
-
-html, body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  background-color: #303030;
-  color: #b4b4b4;
-  font-family: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
-@font-face {
-  font-family: "Nunito";
-  font-style: normal;
-  font-weight: 400;
-  src: local(""), url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
-}
+<style lang="scss">
+/* The reset, palette, fonts and shared primitives live in styles/tokens.css,
+   which main.js imports before this component. */
 
 #app {
   height: 100vh;
@@ -406,71 +385,28 @@ html, body {
 }
 
 #shell.dragging .content-area {
-  outline: 2px dashed #d6d6d6;
+  outline: 2px dashed var(--accent);
   outline-offset: -4px;
 }
 
-header {
-  display: flex;
-  flex-direction: column;
-  width: 180px;
-  flex-shrink: 0;
-  height: 100vh;
-  padding: 20px 12px;
-  background-color: #272727;
-  border-right: 1px solid #1b1b1b;
-  overflow: hidden;
-}
-
-.app-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: #e8eaed;
-  letter-spacing: 0.5px;
-  padding: 0 8px;
-  margin-bottom: 8px;
-  flex-shrink: 0;
-}
-
-.tab-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 8px;
-}
-
-.tab-btn {
-  background: none;
-  border: none;
-  color: #8b929a;
-  font: inherit;
-  font-size: 14px;
-  cursor: pointer;
-  padding: 7px 8px;
-  border-radius: 5px;
-  text-align: left;
-  transition: color 0.1s, background 0.1s;
-
-  &:hover { color: #c6d4df; background: rgba(255,255,255,0.04); }
-  &.active {
-    color: #e8eaed;
-    font-weight: 600;
-    background: rgba(255, 255, 255, 0.08);
-  }
-}
-
 /* ── Content area ── */
+/* A column, so the banners above main take their height out of the viewport
+   rather than adding to it. As a block box with a 100%-tall main, every banner
+   pushed the bottom of the page past the window edge — and the banners are
+   exactly the moments when the content below them matters. */
 .content-area {
   flex: 1;
   min-width: 0;
-  display: block;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   position: relative;
 }
 
 main {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  height: 100%;
 }
 
 /* ── Drop overlay ── */
@@ -681,7 +617,7 @@ main {
 
 .now-playing-cover {
   width: 200px;
-  border-radius: 8px;
+  border-radius: var(--r-cover);
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
 }
 

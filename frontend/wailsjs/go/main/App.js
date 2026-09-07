@@ -6,8 +6,8 @@ export function AddROMFiles(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddROMFiles'](arg1, arg2, arg3);
 }
 
-export function CancelDump() {
-  return window['go']['main']['App']['CancelDump']();
+export function AddStorageUnit() {
+  return window['go']['main']['App']['AddStorageUnit']();
 }
 
 export function CancelInstall() {
@@ -26,12 +26,8 @@ export function GetActiveInstall() {
   return window['go']['main']['App']['GetActiveInstall']();
 }
 
-export function GetDefaultPaths() {
-  return window['go']['main']['App']['GetDefaultPaths']();
-}
-
-export function GetDuckStationPath() {
-  return window['go']['main']['App']['GetDuckStationPath']();
+export function GetCatalogInfo() {
+  return window['go']['main']['App']['GetCatalogInfo']();
 }
 
 export function GetGames() {
@@ -42,6 +38,10 @@ export function GetInstallPrompts(arg1) {
   return window['go']['main']['App']['GetInstallPrompts'](arg1);
 }
 
+export function GetInstallSize(arg1) {
+  return window['go']['main']['App']['GetInstallSize'](arg1);
+}
+
 export function GetInstallState(arg1) {
   return window['go']['main']['App']['GetInstallState'](arg1);
 }
@@ -50,52 +50,40 @@ export function GetItemUpdate(arg1) {
   return window['go']['main']['App']['GetItemUpdate'](arg1);
 }
 
-export function GetMediaItemsSHA() {
-  return window['go']['main']['App']['GetMediaItemsSHA']();
+export function GetLibraryStatus() {
+  return window['go']['main']['App']['GetLibraryStatus']();
 }
 
-export function GetOpticalDrives() {
-  return window['go']['main']['App']['GetOpticalDrives']();
+export function GetLibraryStorage() {
+  return window['go']['main']['App']['GetLibraryStorage']();
+}
+
+export function GetMediaItemsSHA() {
+  return window['go']['main']['App']['GetMediaItemsSHA']();
 }
 
 export function GetPlatform() {
   return window['go']['main']['App']['GetPlatform']();
 }
 
-export function GetPlatformAvailable(arg1) {
-  return window['go']['main']['App']['GetPlatformAvailable'](arg1);
+export function GetROMLibrary() {
+  return window['go']['main']['App']['GetROMLibrary']();
 }
 
 export function GetROMStatus(arg1) {
   return window['go']['main']['App']['GetROMStatus'](arg1);
 }
 
-export function GetRedumperPath() {
-  return window['go']['main']['App']['GetRedumperPath']();
-}
-
-export function GetRom(arg1) {
-  return window['go']['main']['App']['GetRom'](arg1);
-}
-
-export function GetRomFilePaths(arg1) {
-  return window['go']['main']['App']['GetRomFilePaths'](arg1);
-}
-
-export function GetRomLibraryStatus() {
-  return window['go']['main']['App']['GetRomLibraryStatus']();
-}
-
-export function GetRomState(arg1) {
-  return window['go']['main']['App']['GetRomState'](arg1);
-}
-
-export function GetRoms() {
-  return window['go']['main']['App']['GetRoms']();
-}
-
 export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
+}
+
+export function GetSpecVersions(arg1) {
+  return window['go']['main']['App']['GetSpecVersions'](arg1);
+}
+
+export function GetStorageUnits() {
+  return window['go']['main']['App']['GetStorageUnits']();
 }
 
 export function GetVersion(arg1) {
@@ -110,16 +98,12 @@ export function ImportROMs(arg1, arg2) {
   return window['go']['main']['App']['ImportROMs'](arg1, arg2);
 }
 
-export function InstallVersion(arg1, arg2) {
-  return window['go']['main']['App']['InstallVersion'](arg1, arg2);
+export function InstallVersion(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['InstallVersion'](arg1, arg2, arg3, arg4);
 }
 
 export function IsDevMode() {
   return window['go']['main']['App']['IsDevMode']();
-}
-
-export function LaunchRom(arg1, arg2) {
-  return window['go']['main']['App']['LaunchRom'](arg1, arg2);
 }
 
 export function LaunchVersion(arg1, arg2) {
@@ -130,36 +114,28 @@ export function MatchDroppedROMs(arg1) {
   return window['go']['main']['App']['MatchDroppedROMs'](arg1);
 }
 
+export function OpenStorageUnit(arg1) {
+  return window['go']['main']['App']['OpenStorageUnit'](arg1);
+}
+
 export function RefreshLibraryIndex() {
   return window['go']['main']['App']['RefreshLibraryIndex']();
 }
 
-export function SaveSettings(arg1) {
-  return window['go']['main']['App']['SaveSettings'](arg1);
+export function RemoveStorageUnit(arg1) {
+  return window['go']['main']['App']['RemoveStorageUnit'](arg1);
 }
 
-export function ScanDiscs() {
-  return window['go']['main']['App']['ScanDiscs']();
+export function RenameStorageUnit(arg1, arg2) {
+  return window['go']['main']['App']['RenameStorageUnit'](arg1, arg2);
 }
 
-export function SelectExecutable() {
-  return window['go']['main']['App']['SelectExecutable']();
+export function ReorderStorageUnits(arg1) {
+  return window['go']['main']['App']['ReorderStorageUnits'](arg1);
 }
 
-export function SelectFolder() {
-  return window['go']['main']['App']['SelectFolder']();
-}
-
-export function SetDuckStationPath(arg1) {
-  return window['go']['main']['App']['SetDuckStationPath'](arg1);
-}
-
-export function SetRedumperPath(arg1) {
-  return window['go']['main']['App']['SetRedumperPath'](arg1);
-}
-
-export function StartDump(arg1, arg2) {
-  return window['go']['main']['App']['StartDump'](arg1, arg2);
+export function SelectROMFiles() {
+  return window['go']['main']['App']['SelectROMFiles']();
 }
 
 export function SyncMediaItems() {

@@ -2,31 +2,27 @@ package main
 
 import (
 	"archive/zip"
-	"bufio"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"portforge/metadata"
 	"portforge/models"
+	"portforge/storageunits"
 	"portforge/store"
-	"regexp"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/zamiba/forge/engine"
 )
-
-var argRe = regexp.MustCompile(`\$\{(\w+)\}|\$(\w+)`)
 
 // devMetadataOverride is empty in production. The dev build tag (set by
 // "wails dev") populates it with the project-local mediaitem folder.
@@ -41,32 +37,10 @@ var (
 )
 
 const (
-	mediaItemsZipURL  = "https://github.com/portforge/portforge-mediaitems/archive/refs/heads/main.zip"
-	mediaItemsAPIURL  = "https://api.github.com/repos/portforge/portforge-mediaitems/commits/main"
+	mediaItemsZipURL  = "https://github.com/zamiba/portforge-mediaitems/archive/refs/heads/main.zip"
+	mediaItemsAPIURL  = "https://api.github.com/repos/zamiba/portforge-mediaitems/commits/main"
 	mediaItemsSHAFile = ".portforge-sha"
 )
-
-// GetDefaultPaths returns the platform-appropriate default location for the
-// user library folder.
-func (a *App) GetDefaultPaths() map[string]string {
-	home, _ := os.UserHomeDir()
-	var library string
-	switch runtime.GOOS {
-	case "windows":
-		library = filepath.Join(os.Getenv("APPDATA"), "PortForge", "Library")
-	case "darwin":
-		library = filepath.Join(home, "Library", "Application Support", "PortForge", "Library")
-	default:
-		dataHome := os.Getenv("XDG_DATA_HOME")
-		if dataHome == "" {
-			dataHome = filepath.Join(home, ".local", "share")
-		}
-		library = filepath.Join(dataHome, "PortForge", "Library")
-	}
-	return map[string]string{
-		"dataPath": library,
-	}
-}
 
 // GetMediaItemsSHA returns the short commit SHA of the currently installed
 // MediaItems library, or an empty string if not yet downloaded.
@@ -80,7 +54,7 @@ func (a *App) GetMediaItemsSHA() string {
 	data, err := os.ReadFile(filepath.Join(a.metadataPath, mediaItemsSHAFile))
 	if err != nil {
 		// No SHA file — check whether MediaItems actually exist at the path.
-		if _, err := os.Stat(filepath.Join(a.metadataPath, "VideoGameVersion")); err == nil {
+		if _, err := os.Stat(filepath.Join(a.metadataPath, metadata.PortItemType)); err == nil {
 			return "unknown"
 		}
 		return ""
@@ -90,6 +64,38 @@ func (a *App) GetMediaItemsSHA() string {
 		sha = sha[:7]
 	}
 	return sha
+}
+
+// CatalogInfo is the state of the MediaItems catalog, as shown in Settings.
+type CatalogInfo struct {
+	SHA       string `json:"sha"`       // short commit SHA, "unknown", or "" when absent
+	SyncedAt  string `json:"syncedAt"`  // RFC3339; empty when never synced through PortForge
+	PortCount int    `json:"portCount"` // ports the catalog offers, synced or not
+	DevMode   bool   `json:"devMode"`
+}
+
+// GetCatalogInfo summarises the installed catalog for the Settings screen.
+func (a *App) GetCatalogInfo() CatalogInfo {
+	info := CatalogInfo{SHA: a.GetMediaItemsSHA(), DevMode: devMetadataOverride != ""}
+	if a.metadataPath == "" {
+		return info
+	}
+	// The SHA file is written at the end of every sync, so its mtime already is
+	// the last-synced time; persisting a second copy of it would only give the
+	// two a chance to disagree.
+	if st, err := os.Stat(filepath.Join(a.metadataPath, mediaItemsSHAFile)); err == nil {
+		info.SyncedAt = st.ModTime().UTC().Format(time.RFC3339)
+	}
+	entries, err := os.ReadDir(filepath.Join(a.metadataPath, metadata.PortItemType))
+	if err != nil {
+		return info
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			info.PortCount++
+		}
+	}
+	return info
 }
 
 // CheckMediaItemsUpdate fetches the latest commit SHA from GitHub and returns
@@ -159,7 +165,7 @@ func (a *App) SyncMediaItems() error {
 	tmpZip := tmp.Name()
 	defer os.Remove(tmpZip)
 
-	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "downloading", "percent": 0})
+	a.emit("mediaitems:progress", map[string]interface{}{"phase": "downloading", "percent": 0})
 	resp, err := httpClient.Get(mediaItemsZipURL)
 	if err != nil {
 		tmp.Close()
@@ -169,7 +175,7 @@ func (a *App) SyncMediaItems() error {
 		r:     resp.Body,
 		total: resp.ContentLength,
 		onPct: func(pct int) {
-			wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "downloading", "percent": pct})
+			a.emit("mediaitems:progress", map[string]interface{}{"phase": "downloading", "percent": pct})
 		},
 	}
 	_, err = io.Copy(tmp, pr)
@@ -180,7 +186,7 @@ func (a *App) SyncMediaItems() error {
 	}
 
 	// Extract into a temp directory.
-	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "extracting", "percent": 0})
+	a.emit("mediaitems:progress", map[string]interface{}{"phase": "extracting", "percent": 0})
 	tmpDir, err := os.MkdirTemp("", "portforge-mediaitems-*")
 	if err != nil {
 		return err
@@ -192,7 +198,7 @@ func (a *App) SyncMediaItems() error {
 	}
 
 	// Copy extracted files over destDir, overwriting existing files.
-	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "copying", "percent": 0})
+	a.emit("mediaitems:progress", map[string]interface{}{"phase": "copying", "percent": 0})
 	if err := copyDirMerge(tmpDir, destDir); err != nil {
 		return fmt.Errorf("sync failed: %w", err)
 	}
@@ -217,7 +223,7 @@ func (a *App) SyncMediaItems() error {
 		}
 	}
 
-	wailsruntime.EventsEmit(a.ctx, "mediaitems:progress", map[string]interface{}{"phase": "done", "percent": 100})
+	a.emit("mediaitems:progress", map[string]interface{}{"phase": "done", "percent": 100})
 	return nil
 }
 
@@ -264,7 +270,6 @@ func (a *App) copyToUserLibrary(mediaType, itemTitle string) error {
 	return copyDirMerge(src, dst)
 }
 
-
 // GetItemUpdate returns true when the catalog version of this item differs from
 // the user's local library copy (i.e. an update is available).
 func (a *App) GetItemUpdate(itemTitle string) bool {
@@ -277,7 +282,7 @@ func (a *App) GetItemUpdate(itemTitle string) bool {
 // UpdateMediaItem overwrites the user's local library copy with the current
 // catalog version and clears the pending-update flag for that item.
 func (a *App) UpdateMediaItem(itemTitle string) error {
-	if err := a.copyToUserLibrary("VideoGameVersion", itemTitle); err != nil {
+	if err := a.copyToUserLibrary(metadata.PortItemType, itemTitle); err != nil {
 		return err
 	}
 	if a.store != nil {
@@ -364,12 +369,17 @@ func extractZipStrip1(src, destDir string) error {
 }
 
 type App struct {
-	ctx             context.Context
-	metadataPath    string // catalog: MediaItem JSON + artwork, stored in config dir (read-only)
-	dataPath        string // user data: ROM files, install dirs, .state.json (writable)
-	redumperPath    string // path to the redumper binary (optional)
-	duckstationPath string // path to the DuckStation executable (optional)
-	store           *store.Store
+	ctx          context.Context
+	metadataPath string // catalog: MediaItem JSON + artwork, stored in config dir (read-only)
+	dataPath     string // user data: ROM files, install dirs, .state.json (writable)
+	store        *store.Store
+
+	units *storageunits.Manager
+
+	// events is nil in the desktop build, where emit falls through to the Wails
+	// runtime. Under -server it is set to the SSE hub's broadcast, and it doubles
+	// as the "no native window is attached" flag that the file dialogs check.
+	events func(name string, data interface{})
 
 	installMu     sync.RWMutex
 	installingFor string
@@ -388,9 +398,7 @@ func NewApp() *App {
 }
 
 type Settings struct {
-	DataPath        string `json:"dataPath"`
-	RedumperPath    string `json:"redumperPath,omitempty"`
-	DuckStationPath string `json:"duckstationPath,omitempty"`
+	DataPath string `json:"dataPath"`
 }
 
 func configDir() (string, error) {
@@ -401,41 +409,15 @@ func configDir() (string, error) {
 	return filepath.Join(dir, "PortForge"), nil
 }
 
-func settingsFilePath() (string, error) {
-	dir, err := configDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "settings.json"), nil
-}
-
-// GetSettings returns the current app settings.
+// GetSettings reports the current settings.
+//
+// DataPath is derived from the shared StorageUnit list rather than stored: the
+// list is the single place a storage location is configured, and a private copy
+// here would be a second source of truth that goes stale the moment another
+// suite program edits the list.
 func (a *App) GetSettings() Settings {
-	return Settings{
-		DataPath:        a.dataPath,
-		RedumperPath:    a.redumperPath,
-		DuckStationPath: a.duckstationPath,
-	}
-}
-
-// persistSettings serialises all current settings to disk.
-func (a *App) persistSettings() error {
-	path, err := settingsFilePath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	data, err := json.Marshal(Settings{
-		DataPath:        a.dataPath,
-		RedumperPath:    a.redumperPath,
-		DuckStationPath: a.duckstationPath,
-	})
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
+	a.syncDataPath()
+	return Settings{DataPath: a.dataPath}
 }
 
 // ValidateMediaItemsPath checks the configured paths and returns a human-readable
@@ -447,31 +429,34 @@ func (a *App) ValidateMediaItemsPath() string {
 	if info, err := os.Stat(a.dataPath); err != nil || !info.IsDir() {
 		return fmt.Sprintf("The user library folder does not exist or is not accessible: %s", a.dataPath)
 	}
-	if _, err := os.Stat(filepath.Join(a.metadataPath, "VideoGameVersion")); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(a.metadataPath, metadata.PortItemType)); os.IsNotExist(err) {
 		return "The MediaItems catalog has not been synced yet. Go to Settings to sync it."
 	}
 	return ""
 }
 
-// SaveSettings persists the user library path and applies it immediately.
-func (a *App) SaveSettings(dataPath string) error {
-	a.dataPath = dataPath
-	_ = os.MkdirAll(dataPath, 0755)
-	return a.persistSettings()
-}
-
-// SelectFolder opens a native folder picker and returns the chosen path.
-func (a *App) SelectFolder() (string, error) {
-	return wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
-		Title: "Select Folder",
+// SelectROMFiles opens a native multi-file picker for adding ROM files to the
+// library. The chosen files are matched by checksum, not by name, so no
+// extension filter is applied.
+func (a *App) SelectROMFiles() ([]string, error) {
+	if err := a.requireNativeDialogs("Choosing files"); err != nil {
+		return nil, err
+	}
+	return wailsruntime.OpenMultipleFilesDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Select ROM Files",
 	})
 }
 
-// SelectExecutable opens a native file picker filtered to executable files.
-func (a *App) SelectExecutable() (string, error) {
-	return wailsruntime.OpenFileDialog(a.ctx, wailsruntime.OpenDialogOptions{
-		Title: "Select Executable",
-	})
+// requireNativeDialogs reports whether a native file dialog can be opened. Under
+// -server there is no window to parent one to, and a browser cannot hand back a
+// filesystem path: the File System Access API yields opaque handles, and Firefox
+// does not implement it at all. Server mode therefore needs its own way to name
+// a path, which is a UI decision rather than something to fake here.
+func (a *App) requireNativeDialogs(what string) error {
+	if a.events == nil {
+		return nil
+	}
+	return fmt.Errorf("%s needs the desktop window; in server mode a browser cannot return a file path", what)
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -486,23 +471,35 @@ func (a *App) startup(ctx context.Context) {
 		_ = os.MkdirAll(a.metadataPath, 0755)
 	}
 
-	if path, err := settingsFilePath(); err == nil {
-		if data, err := os.ReadFile(path); err == nil {
-			var s Settings
-			if json.Unmarshal(data, &s) == nil {
-				a.dataPath = s.DataPath
-				a.redumperPath = s.RedumperPath
-				a.duckstationPath = s.DuckStationPath
-			}
-		}
+	// The StorageUnit list is shared with every other program in the suite. Nothing
+	// is contributed to it here: storage locations are the user's to choose, and a
+	// folder one program added silently becomes a destination every other program
+	// will write to — a choice the user never made, surfacing in an app they may
+	// not have opened.
+	if m, err := storageunits.NewManager(); err == nil {
+		a.units = m
+		// Carry a library folder chosen in an earlier version into the shared
+		// list before deriving anything from it, so an upgrade does not present
+		// the first-run screen to someone who already configured PortForge.
+		migrateLibraryPath(m, legacySettingsPath())
+		a.syncDataPath()
 	}
+
+	// The ItemType folders under the storage root were renamed twice; a user's
+	// imported files are filed by those names. Only this program's own root is
+	// touched — the other units in the shared list may belong to programs whose
+	// layout is not ours to rewrite.
+	migrateLegacyTypeDirs(a.dataPath)
 
 	// Open the library index database. On first run (empty DB) rebuild from the
 	// catalog, then index any ROM files already in the user library.
 	if dir, err := configDir(); err == nil {
 		if st, err := store.Open(filepath.Join(dir, "library.db")); err == nil {
 			a.store = st
-			if st.IsEmpty() && a.metadataPath != "" {
+			// A schema change can discard the derived dependency index, which
+			// only a rebuild restores — an empty index would otherwise read as
+			// "no port needs a ROM".
+			if (st.IsEmpty() || st.NeedsCatalogRebuild()) && a.metadataPath != "" {
 				_ = st.RebuildCatalog(a.metadataPath)
 			}
 			if a.dataPath != "" {
@@ -511,20 +508,77 @@ func (a *App) startup(ctx context.Context) {
 			}
 		}
 	}
-
-	a.startDiscWatcher()
 }
 
-// GetPlatform returns the current OS as a platform string matching the schema.
+// GetPlatform returns the host as a platform string with its architecture
+// appended: "Linux-x64", "Mac-arm64", "Windows-x64".
+//
+// Architecture rides in the platform string rather than sitting on its own axis
+// because it only matters for the few ports that publish one build per
+// architecture — SpaghettiKart ships separate mac-arm64 and mac-intel-x64
+// archives — while every other port publishes one build per OS.
+//
+// A catalog spec may therefore target either form: "Mac" matches any Mac host,
+// "Mac-arm64" only Apple Silicon. resolveTargetPlatform does that matching and
+// returns the string as the spec declared it, so what reaches engine.Select,
+// $platform and the recorded install state is unchanged for every existing
+// spec — a step reading `$platform == Windows` still sees "Windows".
 func (a *App) GetPlatform() string {
+	osName := "Linux"
 	switch runtime.GOOS {
 	case "windows":
-		return "Windows"
+		osName = "Windows"
 	case "darwin":
-		return "Mac"
-	default:
-		return "Linux"
+		osName = "Mac"
 	}
+	arch := runtime.GOARCH
+	switch arch {
+	case "amd64":
+		arch = "x64"
+	case "386":
+		arch = "x86"
+	}
+	return osName + "-" + arch
+}
+
+// platformBase strips the architecture suffix: "Mac-arm64" → "Mac".
+func platformBase(platform string) string {
+	if i := strings.Index(platform, "-"); i >= 0 {
+		return platform[:i]
+	}
+	return platform
+}
+
+// resolveTargetPlatform picks which platform to build for when the user has not
+// chosen one, and returns it spelled the way the spec spells it.
+//
+// An exact architecture match wins over the bare OS name, so a port shipping
+// separate arm64 and x64 builds gets the right one; a port declaring only "Mac"
+// still matches any Mac. When nothing matches, the bare OS name is returned so
+// the caller reports "no spec for Linux" rather than "no spec for Linux-x64",
+// and so a spec declaring no platforms at all — which targets everything — is
+// still selected.
+func (a *App) resolveTargetPlatform(specs []engine.Spec) string {
+	return resolvePlatform(specs, a.GetPlatform())
+}
+
+func resolvePlatform(specs []engine.Spec, host string) string {
+	base := platformBase(host)
+	fallback := ""
+	for i := range specs {
+		for _, p := range specs[i].TargetPlatforms {
+			if p == host {
+				return p
+			}
+			if p == base && fallback == "" {
+				fallback = p
+			}
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return base
 }
 
 // GetGames returns all VideoGame items from the local mediaitems directory.
@@ -532,11 +586,52 @@ func (a *App) GetGames() ([]models.VideoGame, error) {
 	return metadata.LoadAll(a.metadataPath)
 }
 
-// GetVersions returns all VideoGameVersion items from the local mediaitems directory.
-// GetVersion loads the full VideoGameVersion JSON for a given item title.
-// Used by the detail page, which needs fields not stored in the DB index.
+// resolveRomDeps populates ROMDependency.Formats from the catalog for any
+// dependency whose Formats array is empty. This allows romDependencies in
+// .mediaitem.json to declare only title and _itemType, with format/checksum
+// data coming from the standalone ROM MediaItem rather than being duplicated.
+func (a *App) resolveRomDeps(v *models.VideoGameVersion) {
+	if len(v.ROMDependencies) == 0 {
+		return
+	}
+	if a.store != nil {
+		byKey, _ := a.store.GetROMFormatsForVersion(v.ItemTitle)
+		for i := range v.ROMDependencies {
+			for j := range v.ROMDependencies[i].Options {
+				opt := &v.ROMDependencies[i].Options[j]
+				if len(opt.Formats) == 0 {
+					opt.Formats = byKey[opt.ItemType+"\x00"+opt.Title]
+				}
+			}
+		}
+		return
+	}
+	for i := range v.ROMDependencies {
+		for j := range v.ROMDependencies[i].Options {
+			opt := &v.ROMDependencies[i].Options[j]
+			if len(opt.Formats) > 0 {
+				continue
+			}
+			if rom, _ := metadata.FindRomByTitle(a.metadataPath, opt.ItemType, opt.Title); rom != nil {
+				opt.Formats = rom.Formats
+			}
+		}
+	}
+}
+
+// loadVersion loads a VideoGameVersion and resolves its romDependencies'
+// format data from the ROM catalog.
+func (a *App) loadVersion(itemTitle string) (*models.VideoGameVersion, error) {
+	v, err := metadata.LoadOneVersion(a.metadataPath, itemTitle)
+	if err != nil || v == nil {
+		return v, err
+	}
+	a.resolveRomDeps(v)
+	return v, nil
+}
+
 func (a *App) GetVersion(itemTitle string) (*models.VideoGameVersion, error) {
-	return metadata.LoadOneVersion(a.metadataPath, itemTitle)
+	return a.loadVersion(itemTitle)
 }
 
 func (a *App) GetVersions() ([]models.VideoGameVersion, error) {
@@ -546,91 +641,17 @@ func (a *App) GetVersions() ([]models.VideoGameVersion, error) {
 	return metadata.LoadAllVersions(a.metadataPath)
 }
 
-// GetRoms returns all VideoGameRom items with display-level format info.
-func (a *App) GetRoms() ([]models.VideoGameRom, error) {
-	if a.store != nil {
-		return a.store.GetRoms()
-	}
-	return metadata.LoadAllRoms(a.metadataPath)
-}
-
-// romItemType resolves a ROM's _itemType (e.g. "NESRom", "PS1Rom") from its
-// item title, falling back to the generic "VideoGameRom" when unknown.
-func (a *App) romItemType(itemTitle string) string {
-	if a.store != nil {
-		if t, err := a.store.GetItemType(itemTitle); err == nil && t != "" {
-			return t
-		}
-	}
-	return "VideoGameRom"
-}
-
-// GetRom loads the full VideoGameRom JSON for a given item title.
-// Used by the ROM detail page, which needs fields not stored in the DB index.
-func (a *App) GetRom(itemTitle string) (*models.VideoGameRom, error) {
-	return metadata.LoadOneRom(a.metadataPath, itemTitle, a.romItemType(itemTitle))
-}
-
-// GetRomFilePaths returns md5 → local file path for all format files of a ROM
-// that are present in the user's library.
-func (a *App) GetRomFilePaths(itemTitle string) (map[string]string, error) {
-	if a.store != nil {
-		return a.store.GetRomFilePaths(itemTitle)
-	}
-	return map[string]string{}, nil
-}
-
-// GetRomLibraryStatus returns a map of ROM itemTitle → whether any file is present.
-func (a *App) GetRomLibraryStatus() (map[string]bool, error) {
-	if a.store != nil {
-		return a.store.GetRomLibraryStatus()
-	}
-	roms, err := metadata.LoadAllRoms(a.metadataPath)
-	if err != nil {
-		return nil, err
-	}
-	result := make(map[string]bool)
-	for _, rom := range roms {
-		romDir := filepath.Join(a.dataPath, "VideoGameRom", rom.ItemTitle)
-		hashes, err := metadata.ScanROMs(romDir)
-		result[rom.ItemTitle] = err == nil && len(hashes) > 0
-	}
-	return result, nil
-}
-
-// romDir returns the user-library folder for a ROM item.
-func (a *App) romDir(itemTitle string) string {
-	return filepath.Join(a.dataPath, a.romItemType(itemTitle), itemTitle)
-}
-
-// GetRomState returns the persisted play-tracking state for a ROM, or nil if
-// it has never been launched.
-func (a *App) GetRomState(itemTitle string) (*models.RomState, error) {
-	return metadata.ReadRomState(a.romDir(itemTitle))
-}
-
 // GetInstallState returns the install state for a VideoGameVersion, or nil if not yet installed.
 func (a *App) GetInstallState(itemTitle string) (*models.InstallState, error) {
-	versionDir := filepath.Join(a.dataPath, "VideoGameVersion", itemTitle)
+	versionDir := filepath.Join(a.dataPath, metadata.PortItemType, itemTitle)
 	return metadata.ReadInstallState(versionDir)
-}
-
-// GetPlatformAvailable reports whether the version can be installed on the current platform.
-// If a .install.json exists it is the sole source of truth (targetPlatforms).
-// Otherwise it falls back to checking the download entries in .mediaitem.json.
-func (a *App) GetPlatformAvailable(itemTitle string) (bool, error) {
-	specs, err := metadata.LoadInstallationSpecs(a.metadataPath, itemTitle)
-	if err != nil {
-		return false, err
-	}
-	return len(specs) > 0 && a.findMatchingSpec(specs) != nil, nil
 }
 
 // GetInstallPrompts returns the user-facing arg prompts for a version's .installation.json,
 // with ROM readiness pre-populated per option. Returns nil if no spec exists or the spec
 // has no args (meaning the install needs no user input).
 func (a *App) GetInstallPrompts(itemTitle string) ([]models.ArgPrompt, error) {
-	version, err := metadata.LoadOneVersion(a.metadataPath, itemTitle)
+	version, err := a.loadVersion(itemTitle)
 	if err != nil || version == nil {
 		return nil, err
 	}
@@ -643,60 +664,20 @@ func (a *App) GetInstallPrompts(itemTitle string) ([]models.ArgPrompt, error) {
 		return nil, nil
 	}
 
-	var romHashes map[string]string
-	if a.store != nil {
-		romHashes, _ = a.store.GetROMLocalPaths()
-	} else {
-		romHashes, _ = metadata.ScanROMLibrary(a.dataPath)
-	}
-
-	// Build title → present map from romDependencies
-	romPresent := make(map[string]bool)
-	for _, dep := range version.ROMDependencies {
-		for _, f := range dep.Formats {
-			if _, ok := romHashes[f.Checksums.MD5]; ok {
-				romPresent[dep.Title] = true
-				break
-			}
-		}
-	}
-
-	// Sort arg names for deterministic display order
-	names := make([]string, 0, len(spec.Args))
-	for k := range spec.Args {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-
+	// The engine orders prompts deterministically; map them onto the UI's own
+	// shape so the frontend contract doesn't follow the engine's.
 	var prompts []models.ArgPrompt
-	for _, name := range names {
-		argSpec := spec.Args[name]
-		prompt := models.ArgPrompt{Name: name, Type: argSpec.Type, Label: argSpec.Label}
-		for _, opt := range argSpec.Options {
-			ready := opt.ROMTitle == "" || romPresent[opt.ROMTitle]
+	for _, p := range spec.Prompts() {
+		prompt := models.ArgPrompt{Name: p.Name, Type: p.Type, Label: p.Label}
+		for _, opt := range p.Options {
 			prompt.Options = append(prompt.Options, models.ArgOption{
-				Value:     opt.Value,
-				Label:     opt.Label,
-				ROMTitle:  opt.ROMTitle,
-				ROMsReady: ready,
+				Value: opt.Value,
+				Label: opt.Label,
 			})
 		}
 		prompts = append(prompts, prompt)
 	}
 	return prompts, nil
-}
-
-// platformMatches returns true if platforms is empty (all platforms) or contains target.
-func platformMatches(platforms []string, target string) bool {
-	if len(platforms) == 0 {
-		return true
-	}
-	for _, p := range platforms {
-		if p == target {
-			return true
-		}
-	}
-	return false
 }
 
 // CancelInstall cancels a running install. The install goroutine will stop at the
@@ -709,9 +690,18 @@ func (a *App) CancelInstall() {
 	}
 }
 
-func (a *App) InstallVersion(itemTitle string, args map[string]string) error {
+func (a *App) InstallVersion(itemTitle string, args map[string]string, specVersion, targetPlatform string) error {
 	installCtx, cancel := context.WithCancel(a.ctx)
+	// Only one install may run at a time. Claiming the slot and recording the
+	// cancel func has to happen under the same lock, or a second caller can
+	// overwrite the first one's cancel func and leave it unstoppable.
 	a.installMu.Lock()
+	if a.installingFor != "" {
+		busy := a.installingFor
+		a.installMu.Unlock()
+		cancel()
+		return fmt.Errorf("already installing %s", busy)
+	}
 	a.installingFor = itemTitle
 	a.installCancel = cancel
 	a.installMu.Unlock()
@@ -723,11 +713,11 @@ func (a *App) InstallVersion(itemTitle string, args map[string]string) error {
 		cancel()
 	}()
 
-	wailsruntime.EventsEmit(a.ctx, "install:started", map[string]interface{}{
+	a.emit("install:started", map[string]interface{}{
 		"itemTitle": itemTitle,
 	})
 
-	version, err := metadata.LoadOneVersion(a.metadataPath, itemTitle)
+	version, err := a.loadVersion(itemTitle)
 	if err != nil {
 		return err
 	}
@@ -735,25 +725,69 @@ func (a *App) InstallVersion(itemTitle string, args map[string]string) error {
 		return fmt.Errorf("version not found: %s", itemTitle)
 	}
 
-	versionDir := filepath.Join(a.dataPath, "VideoGameVersion", itemTitle)
+	versionDir := filepath.Join(a.dataPath, metadata.PortItemType, itemTitle)
 
-	specs, err := metadata.LoadInstallationSpecs(a.metadataPath, itemTitle)
+	specFile, err := metadata.LoadSpecFile(a.metadataPath, itemTitle)
 	if err != nil {
 		return fmt.Errorf("failed to load installation spec: %w", err)
 	}
-	spec := a.findMatchingSpec(specs)
+	if specFile == nil {
+		return fmt.Errorf("no install spec for %s", itemTitle)
+	}
+	specs := specFile.Specs
+	order := engine.VersionOrder(specs)
+
+	// An empty target platform means "this machine". An empty version is
+	// ambiguous once a build can span several, so it is resolved here rather
+	// than left to Select: the file's stated default, else the newest declared.
+	if targetPlatform == "" {
+		targetPlatform = a.resolveTargetPlatform(specs)
+	}
+	if specVersion == "" {
+		specVersion = specFile.DefaultVersion
+	}
+	if specVersion == "" && len(order) > 0 {
+		specVersion = order[len(order)-1] // the order is oldest first
+	}
+
+	spec := engine.Select(specs, targetPlatform, specVersion)
 	if spec == nil {
-		return fmt.Errorf("no install spec available for %s on %s", itemTitle, a.GetPlatform())
+		return fmt.Errorf("no install spec for %s at version %q on %s", itemTitle, specVersion, targetPlatform)
 	}
-	if args == nil {
-		args = map[string]string{}
+	resolvedArgs, err := spec.ResolveArgs(args)
+	if err != nil {
+		return err
 	}
-	if err := a.buildAndInstallSpec(installCtx, version, spec, args, versionDir); err != nil {
+
+	// A $name nothing declares is left in the string verbatim by the engine, so
+	// a spec with a typo builds for as long as it takes to reach the step that
+	// carries it and then fails with whatever the invoked tool made of the
+	// literal text. Catalog specs are synced rather than written here, so this
+	// is checked before anything is downloaded or compiled.
+	//
+	// Only the install path checks this. Uninstalling deliberately does not:
+	// refusing to remove a port because its uninstallSteps have a typo would
+	// strand the user with something they cannot get rid of.
+	if missing := engine.UndeclaredArgs(spec); len(missing) > 0 {
+		return fmt.Errorf("the install spec for %s uses %s, which it does not declare — this is a problem with the spec, not with your setup",
+			itemTitle, joinArgNames(missing))
+	}
+
+	exes, err := a.runSpec(installCtx, spec, spec.Steps, resolvedArgs, version, versionDir, engine.Options{
+		RequireExecutable: true,
+		Platform:          targetPlatform,
+		Version:           specVersion,
+		VersionOrder:      order,
+	})
+	if err != nil {
+		return err
+	}
+	if err := a.writeInstallState(versionDir, spec, exes, resolvedArgs, targetPlatform); err != nil {
 		return err
 	}
 	// Snapshot the catalog MediaItem into the user library so we can detect
 	// future updates by comparing the two copies.
-	_ = a.copyToUserLibrary("VideoGameVersion", itemTitle)
+	_ = a.copyToUserLibrary(metadata.PortItemType, itemTitle)
 	// Resync ROM index so any ROMs staged during the build are reflected.
 	if a.store != nil {
 		_ = a.store.SyncUserROMs(a.dataPath)
@@ -763,309 +797,38 @@ func (a *App) InstallVersion(itemTitle string, args map[string]string) error {
 
 // findMatchingSpec returns the first spec in the array whose targetPlatforms includes
 // the current platform (or has no platform restriction). Returns nil if none match.
-func (a *App) findMatchingSpec(specs []models.InstallationSpec) *models.InstallationSpec {
-	platform := a.GetPlatform()
-	for i := range specs {
-		s := &specs[i]
-		if len(s.TargetPlatforms) == 0 {
-			return s
-		}
-		for _, p := range s.TargetPlatforms {
-			if p == platform {
-				return s
-			}
-		}
-	}
-	return nil
+// Used where no specific version was asked for — status checks and prompts.
+func (a *App) findMatchingSpec(specs []engine.Spec) *engine.Spec {
+	return engine.Select(specs, a.resolveTargetPlatform(specs), "")
 }
 
-
-// buildAndInstallSpec handles the .install.json spec path.
-func (a *App) buildAndInstallSpec(ctx context.Context, version *models.VideoGameVersion, spec *models.InstallationSpec, args map[string]string, versionDir string) error {
-	// Resolve romTitle for each choice arg and inject it so runBuildSteps can use it.
-	enriched := make(map[string]string, len(args))
-	for k, v := range args {
-		enriched[k] = v
+// GetSpecVersions returns the versions a port declares, each with the platforms
+// it can be built for and one of them marked as the default to offer. Every
+// version is returned regardless of host platform: choosing a build target is the
+// user's, via the platform picker, since PortForge can build for platforms it does
+// not run on.
+//
+// The spec file declares versions oldest first, because that order is the
+// hierarchy that ordered `if` conditions compare against. This reverses it, since
+// a picker should lead with the newest release.
+func (a *App) GetSpecVersions(itemTitle string) ([]engine.SpecVersion, error) {
+	file, err := metadata.LoadSpecFile(a.metadataPath, itemTitle)
+	if err != nil || file == nil {
+		return nil, err
 	}
-	for argName, argSpec := range spec.Args {
-		if argSpec.Type != "choice" {
-			continue
-		}
-		selectedValue := args[argName]
-		for _, opt := range argSpec.Options {
-			if opt.Value == selectedValue && opt.ROMTitle != "" {
-				enriched["__romTitle__"+argName] = opt.ROMTitle
-				break
-			}
-		}
+	declared := file.Versions()
+	out := make([]engine.SpecVersion, len(declared))
+	for i, v := range declared {
+		out[len(declared)-1-i] = v
 	}
-	exes, err := a.runBuildSteps(ctx, spec.Steps, spec.Dependencies, enriched, version, versionDir)
-	if err != nil {
-		return err
-	}
-	return a.writeInstallState(versionDir, spec, exes)
+	return out, nil
 }
-
-// runBuildSteps executes a build step sequence and returns the declared executables.
-func (a *App) runBuildSteps(ctx context.Context, steps []models.BuildStep, deps []string, args map[string]string, version *models.VideoGameVersion, versionDir string) ([]models.ExecutableEntry, error) {
-	if len(deps) > 0 {
-		if err := checkDependencies(deps); err != nil {
-			return nil, err
-		}
-	}
-
-	if err := os.MkdirAll(versionDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create version data directory: %w", err)
-	}
-
-	var romHashes map[string]string
-	if a.store != nil {
-		romHashes, _ = a.store.GetROMLocalPaths()
-	} else {
-		var err error
-		romHashes, err = metadata.ScanROMLibrary(a.dataPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan ROM library: %w", err)
-		}
-	}
-
-	var msys2Root string
-	if runtime.GOOS == "windows" {
-		for _, dep := range deps {
-			if dep == "msys2" {
-				msys2Root = findMSYS2()
-				break
-			}
-		}
-	}
-
-	logPath := filepath.Join(versionDir, "install.log")
-	logFile, err := os.Create(logPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create install log: %w", err)
-	}
-	defer logFile.Close()
-	logf := func(format string, v ...any) {
-		fmt.Fprintf(logFile, format+"\n", v...)
-	}
-
-	currentDir := versionDir
-	var exes []models.ExecutableEntry
-
-	total := 0
-	for _, s := range steps {
-		if s.If == "" || evalCondition(s.If, args) {
-			total++
-		}
-	}
-
-	stepNum := 0
-	for _, step := range steps {
-		if step.If != "" && !evalCondition(step.If, args) {
-			logf("[skipped] %s", stepLabel(step))
-			continue
-		}
-
-		select {
-		case <-ctx.Done():
-			wailsruntime.EventsEmit(a.ctx, "install:cancelled", nil)
-			return nil, fmt.Errorf("install cancelled")
-		default:
-		}
-
-		label := stepLabel(step)
-		logf("[step %d/%d] %s", stepNum+1, total, label)
-		a.emitStep(stepNum, total, label)
-		stepNum++
-
-		switch step.Step {
-		case "cd":
-			currentDir = filepath.Clean(filepath.Join(currentDir, interpolate(step.Path, args)))
-
-		case "fetch":
-			url := interpolate(step.URL, args)
-			dest := filepath.Join(currentDir, interpolate(step.Dest, args))
-			if err := fetchFile(url, dest); err != nil {
-				a.emitFailed(label, err.Error())
-				return nil, fmt.Errorf("build step 'fetch' failed: %w", err)
-			}
-
-		case "extract":
-			src := filepath.Join(currentDir, interpolate(step.Src, args))
-			dest := filepath.Join(currentDir, interpolate(step.Dest, args))
-			if err := os.MkdirAll(dest, 0755); err != nil {
-				a.emitFailed(label, err.Error())
-				return nil, fmt.Errorf("build step 'extract' failed: %w", err)
-			}
-			var extractErr error
-			switch strings.ToLower(filepath.Ext(src)) {
-			case ".7z":
-				cmd7z := exec.CommandContext(ctx, "7z", "x", "-o"+dest, src)
-				cmd7z.Dir = currentDir
-				cmd7z.Env = mergeEnv(nil)
-				if msys2Root != "" {
-					cmd7z.Env = prependMSYS2Path(cmd7z.Env, msys2Root)
-				}
-				stdout7z, _ := cmd7z.StdoutPipe()
-				stderr7z, _ := cmd7z.StderrPipe()
-				if err := cmd7z.Start(); err != nil {
-					extractErr = err
-				} else {
-					go streamOutput(stdout7z, logFile)
-					go streamOutput(stderr7z, logFile)
-					extractErr = cmd7z.Wait()
-				}
-			default:
-				extractErr = extractZip(src, dest)
-			}
-			if extractErr != nil {
-				a.emitFailed(label, extractErr.Error())
-				return nil, fmt.Errorf("build step 'extract' failed: %w", extractErr)
-			}
-
-		case "copy":
-			var srcPath string
-			if step.From == "rom" {
-				romTitle := interpolate(step.Src, args)
-				if romTitle == "" && step.Arg != "" {
-					// Legacy format: arg reference — look up pre-resolved romTitle.
-					romTitle = args["__romTitle__"+step.Arg]
-				}
-				var romDeps []models.ROMDependency
-				if version != nil {
-					romDeps = version.ROMDependencies
-				}
-				for _, dep := range romDeps {
-					if romTitle != "" && dep.Title != romTitle {
-						continue
-					}
-					for _, f := range dep.Formats {
-						if p, ok := romHashes[f.Checksums.MD5]; ok {
-							srcPath = p
-							if romTitle == "" {
-								romTitle = dep.Title
-							}
-							break
-						}
-					}
-					if srcPath != "" {
-						break
-					}
-				}
-				if srcPath == "" {
-					a.emitFailed(label, fmt.Sprintf("ROM not found: %s", romTitle))
-					return nil, fmt.Errorf("build step 'copy': ROM not found: %s", romTitle)
-				}
-			} else {
-				srcPath = filepath.Join(currentDir, interpolate(step.Src, args))
-			}
-			dest := filepath.Join(currentDir, interpolate(step.Dest, args))
-			if err := copyPath(srcPath, dest); err != nil {
-				a.emitFailed(label, err.Error())
-				return nil, fmt.Errorf("build step 'copy' failed: %w", err)
-			}
-
-		case "move":
-			src := filepath.Join(currentDir, interpolate(step.Src, args))
-			dest := filepath.Join(currentDir, interpolate(step.Dest, args))
-			logf("  src:  %s", src)
-			logf("  dest: %s", dest)
-			if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-				a.emitFailed(label, err.Error())
-				return nil, fmt.Errorf("build step 'move' failed: %w", err)
-			}
-			// os.Rename is atomic but fails across devices; fall back to copy+delete.
-			if err := os.Rename(src, dest); err != nil {
-				if err2 := copyPath(src, dest); err2 != nil {
-					msg := fmt.Sprintf("src=%s dest=%s: %v", src, dest, err2)
-					a.emitFailed(label, msg)
-					return nil, fmt.Errorf("build step 'move' failed: %s", msg)
-				}
-				if err2 := os.RemoveAll(src); err2 != nil {
-					a.emitFailed(label, err2.Error())
-					return nil, fmt.Errorf("build step 'move' (cleanup) failed: %w", err2)
-				}
-			}
-
-		case "make":
-			makeArgs := make([]string, len(step.Args))
-			for j, a := range step.Args {
-				makeArgs[j] = interpolate(a, args)
-			}
-			cmd := exec.CommandContext(ctx, "make", makeArgs...)
-			cmd.Dir = currentDir
-			cmd.Env = mergeEnv(step.Env)
-			if msys2Root != "" {
-				cmd.Env = prependMSYS2Path(cmd.Env, msys2Root)
-			}
-
-			stdout, _ := cmd.StdoutPipe()
-			stderr, _ := cmd.StderrPipe()
-			if err := cmd.Start(); err != nil {
-				a.emitFailed(label, err.Error())
-				return nil, fmt.Errorf("build step 'make' failed to start: %w", err)
-			}
-			go streamOutput(stdout, logFile)
-			go streamOutput(stderr, logFile)
-			if err := cmd.Wait(); err != nil {
-				a.emitFailed(label, err.Error())
-				return nil, fmt.Errorf("build step 'make' failed: %w", err)
-			}
-
-		case "createDir":
-			full := filepath.Join(currentDir, interpolate(step.Path, args))
-			if err := os.MkdirAll(full, 0755); err != nil {
-				a.emitFailed(label, err.Error())
-				return nil, fmt.Errorf("build step 'createDir' failed: %w", err)
-			}
-
-		case "touch":
-			full := filepath.Join(currentDir, interpolate(step.Path, args))
-			if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
-				a.emitFailed(label, err.Error())
-				return nil, fmt.Errorf("build step 'touch' failed: %w", err)
-			}
-			f, err := os.Create(full)
-			if err != nil {
-				a.emitFailed(label, err.Error())
-				return nil, fmt.Errorf("build step 'touch' failed: %w", err)
-			}
-			f.Close()
-
-		case "deletePath":
-			full := filepath.Join(currentDir, interpolate(step.Path, args))
-			if err := os.RemoveAll(full); err != nil {
-				a.emitFailed(label, err.Error())
-				return nil, fmt.Errorf("build step 'deletePath' failed: %w", err)
-			}
-
-		case "defineExecutable":
-			exePath := interpolate(step.Executable, args)
-			if runtime.GOOS != "windows" {
-				_ = os.Chmod(filepath.Join(versionDir, exePath), 0755)
-			}
-			title := step.Title
-			if title == "" {
-				title = filepath.Base(exePath)
-			}
-			exes = append(exes, models.ExecutableEntry{Path: exePath, Title: title})
-		}
-	}
-
-	if len(exes) == 0 {
-		a.emitFailed("defineExecutable", "no defineExecutable steps found")
-		return nil, fmt.Errorf("build produced no output: no 'defineExecutable' steps defined")
-	}
-
-	return exes, nil
-}
-
 
 // CleanBuildDir removes build artefacts for a version after a failed build.
-// It uses the buildPaths array from the matching .install.json spec when available,
+// It uses the buildPaths array from the matching spec when available,
 // falling back to removing common build directories (.build, build).
 func (a *App) CleanBuildDir(itemTitle string) error {
-	versionDir := filepath.Join(a.dataPath, "VideoGameVersion", itemTitle)
+	versionDir := filepath.Join(a.dataPath, metadata.PortItemType, itemTitle)
 	specs, _ := metadata.LoadInstallationSpecs(a.metadataPath, itemTitle)
 	if spec := a.findMatchingSpec(specs); spec != nil && len(spec.BuildPaths) > 0 {
 		for _, p := range spec.BuildPaths {
@@ -1080,17 +843,40 @@ func (a *App) CleanBuildDir(itemTitle string) error {
 	return nil
 }
 
-// UninstallVersion runs any uninstallSteps from the .install.json spec, then removes
+// UninstallVersion runs any uninstallSteps from the spec file, then removes
 // the install directory and clears the .state.json. If no uninstallSteps are defined
 // it simply removes the install/ subdirectory.
 func (a *App) UninstallVersion(itemTitle string) error {
-	versionDir := filepath.Join(a.dataPath, "VideoGameVersion", itemTitle)
+	versionDir := filepath.Join(a.dataPath, metadata.PortItemType, itemTitle)
 
 	var cleanupErr error
 	specs, _ := metadata.LoadInstallationSpecs(a.metadataPath, itemTitle)
-	if spec := a.findMatchingSpec(specs); spec != nil && len(spec.UninstallSteps) > 0 {
-		version, _ := metadata.LoadOneVersion(a.metadataPath, itemTitle)
-		_, cleanupErr = a.runBuildSteps(a.ctx, spec.UninstallSteps, nil, map[string]string{}, version, versionDir)
+	// Uninstall with the steps of the version that was installed, not whichever
+	// spec happens to match first — they can differ between versions.
+	installed, _ := metadata.ReadInstallState(versionDir)
+	wantVersion, wantPlatform := "", a.resolveTargetPlatform(specs)
+	if installed != nil {
+		wantVersion = installed.InstalledVersion
+		if installed.TargetPlatform != "" {
+			wantPlatform = installed.TargetPlatform
+		}
+	}
+	spec := engine.Select(specs, wantPlatform, wantVersion)
+	if spec == nil {
+		spec = a.findMatchingSpec(specs)
+	}
+	if spec != nil && len(spec.UninstallSteps) > 0 {
+		version, _ := a.loadVersion(itemTitle)
+		// The tools that built this item may no longer be installed, so the
+		// dependency check is skipped — but they stay on the run allowlist.
+		// The uninstall steps get the same $platform/$version the build did, so
+		// a spec that branched on them tears down what it actually created.
+		_, cleanupErr = a.runSpec(a.ctx, spec, spec.UninstallSteps, map[string]string{}, version, versionDir, engine.Options{
+			SkipDependencyCheck: true,
+			Platform:            wantPlatform,
+			Version:             wantVersion,
+			VersionOrder:        engine.VersionOrder(specs),
+		})
 	} else {
 		cleanupErr = os.RemoveAll(filepath.Join(versionDir, "install"))
 	}
@@ -1103,7 +889,6 @@ func (a *App) UninstallVersion(itemTitle string) error {
 	state.Installed = false
 	state.InstalledVersion = ""
 	state.InstallDir = ""
-	state.ExecutablePath = ""
 	state.Executables = nil
 	_ = metadata.WriteInstallState(versionDir, state)
 
@@ -1115,7 +900,7 @@ func (a *App) UninstallVersion(itemTitle string) error {
 
 // LaunchVersion launches an installed executable. If executablePath is empty the primary is used.
 func (a *App) LaunchVersion(itemTitle string, executablePath string) error {
-	versionDir := filepath.Join(a.dataPath, "VideoGameVersion", itemTitle)
+	versionDir := filepath.Join(a.dataPath, metadata.PortItemType, itemTitle)
 	state, err := metadata.ReadInstallState(versionDir)
 	if err != nil {
 		return err
@@ -1125,9 +910,6 @@ func (a *App) LaunchVersion(itemTitle string, executablePath string) error {
 	}
 
 	exes := state.Executables
-	if len(exes) == 0 && state.ExecutablePath != "" {
-		exes = []models.ExecutableEntry{{Path: state.ExecutablePath, Title: "Play"}}
-	}
 	if len(exes) == 0 {
 		return fmt.Errorf("no executable path configured for this version — add \"executablePath\" to the download entry in the .mediaitem.json and reinstall")
 	}
@@ -1152,7 +934,7 @@ func (a *App) LaunchVersion(itemTitle string, executablePath string) error {
 		return err
 	}
 
-	wailsruntime.EventsEmit(a.ctx, "game:started", map[string]interface{}{
+	a.emit("game:started", map[string]interface{}{
 		"itemTitle": itemTitle,
 	})
 
@@ -1167,7 +949,7 @@ func (a *App) LaunchVersion(itemTitle string, executablePath string) error {
 			metadata.WriteInstallState(versionDir, s)
 		}
 
-		wailsruntime.EventsEmit(a.ctx, "game:ended", map[string]interface{}{
+		a.emit("game:ended", map[string]interface{}{
 			"itemTitle":   itemTitle,
 			"playSeconds": playSeconds,
 		})
@@ -1176,128 +958,137 @@ func (a *App) LaunchVersion(itemTitle string, executablePath string) error {
 	return nil
 }
 
-// emulatorLaunchCommand resolves the emulator executable and launch arguments
-// for a ROM platform (_itemType). PortForge is opinionated about which emulator
-// to use per platform — DuckStation is currently the only one supported, for PS1.
-func (a *App) emulatorLaunchCommand(itemType, romPath string) (path string, args []string, err error) {
-	switch itemType {
-	case "PS1Rom":
-		if a.duckstationPath == "" {
-			return "", nil, fmt.Errorf("DuckStation is not configured — set its path in Settings")
+// GetInstallSize returns the total bytes occupied by a version's data directory,
+// which includes the built game plus any source and build artefacts left behind.
+// Returns 0 when the directory does not exist.
+func (a *App) GetInstallSize(itemTitle string) (int64, error) {
+	dir := filepath.Join(a.dataPath, metadata.PortItemType, itemTitle)
+	var total int64
+	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil //nolint:nilerr // an unreadable entry should not fail the total
 		}
-		return a.duckstationPath, duckStationLaunchArgs(romPath), nil
-	default:
-		return "", nil, fmt.Errorf("PortForge doesn't support an emulator for %s yet", itemType)
-	}
-}
-
-// LaunchRom launches a ROM file with its configured emulator. If formatFilename
-// is given, that specific format is launched (when present in the library);
-// otherwise the ROM's last-launched format is preferred, falling back to the
-// first format that's present.
-func (a *App) LaunchRom(itemTitle string, formatFilename string) error {
-	itemType := a.romItemType(itemTitle)
-	romDir := a.romDir(itemTitle)
-
-	rom, err := metadata.LoadOneRom(a.metadataPath, itemTitle, itemType)
-	if err != nil {
-		return err
-	}
-	if rom == nil {
-		return fmt.Errorf("ROM not found: %s", itemTitle)
-	}
-
-	filePaths, err := a.GetRomFilePaths(itemTitle)
-	if err != nil {
-		return err
-	}
-	if len(filePaths) == 0 {
-		return fmt.Errorf("no ROM files in library for %s", itemTitle)
-	}
-
-	state, err := metadata.ReadRomState(romDir)
-	if err != nil {
-		return err
-	}
-	if state == nil {
-		state = &models.RomState{}
-	}
-
-	preferred := formatFilename
-	if preferred == "" {
-		preferred = state.LastFormat
-	}
-
-	var target *models.ROMFormat
-	if preferred != "" {
-		for i := range rom.Formats {
-			if rom.Formats[i].Filename == preferred {
-				if _, present := filePaths[strings.ToLower(rom.Formats[i].Checksums.MD5)]; present {
-					target = &rom.Formats[i]
-				}
-				break
-			}
+		if info, err := d.Info(); err == nil {
+			total += info.Size()
 		}
-	}
-	if target == nil {
-		for i := range rom.Formats {
-			if _, present := filePaths[strings.ToLower(rom.Formats[i].Checksums.MD5)]; present {
-				target = &rom.Formats[i]
-				break
-			}
-		}
-	}
-	if target == nil {
-		return fmt.Errorf("ROM file not found in library: %s", itemTitle)
-	}
-
-	romPath := filePaths[strings.ToLower(target.Checksums.MD5)]
-	absPath, err := filepath.Abs(romPath)
-	if err != nil {
-		return err
-	}
-
-	emulatorPath, emulatorArgs, err := a.emulatorLaunchCommand(itemType, absPath)
-	if err != nil {
-		return err
-	}
-
-	cmd := newCommand(emulatorPath, emulatorArgs...)
-	cmd.Dir = filepath.Dir(absPath)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	wailsruntime.EventsEmit(a.ctx, "rom:started", map[string]interface{}{
-		"itemTitle": itemTitle,
+		return nil
 	})
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	return total, err
+}
 
-	state.LastFormat = target.Filename
-	_ = metadata.WriteRomState(romDir, state)
+// LibraryStatus is everything the library grid needs to draw one card's badge and
+// decide which filter chips it belongs to.
+type LibraryStatus struct {
+	Installed        bool   `json:"installed"`
+	InstalledVersion string `json:"installedVersion,omitempty"`
+	LatestVersion    string `json:"latestVersion,omitempty"`
+	HasUpdate        bool   `json:"hasUpdate"`
+	Buildable        bool   `json:"buildable"` // the port declares an install spec at all
+	HasROMDeps       bool   `json:"hasRomDeps"`
+	ROMsReady        bool   `json:"romsReady"`
+	LastPlayedAt     string `json:"lastPlayedAt,omitempty"`
+}
 
-	startTime := time.Now()
-	go func() {
-		cmd.Wait()
-		playSeconds := int64(time.Since(startTime).Seconds())
+// GetLibraryStatus returns the status of every version in the catalog, keyed by
+// item title. The grid needs this for all items at once, so it is gathered in a
+// single call rather than four per card.
+func (a *App) GetLibraryStatus() (map[string]LibraryStatus, error) {
+	versions, err := a.GetVersions()
+	if err != nil {
+		return nil, err
+	}
 
-		if s, err := metadata.ReadRomState(romDir); err == nil && s != nil {
-			s.TotalPlaySeconds += playSeconds
-			s.LastPlayedAt = time.Now().UTC().Format(time.RFC3339)
-			metadata.WriteRomState(romDir, s)
+	// The listing rows from the store carry no romDependencies of their own, so
+	// readiness comes from the index in a single query rather than from versions.
+	var romReady map[string]bool
+	if a.store != nil {
+		romReady, _ = a.store.GetVersionROMReadiness()
+	} else {
+		romReady = a.romReadinessFromDisk(versions)
+	}
+
+	out := make(map[string]LibraryStatus, len(versions))
+	for i := range versions {
+		v := &versions[i]
+		st := LibraryStatus{HasUpdate: a.GetItemUpdate(v.ItemTitle)}
+
+		// Buildable means the port declares an install spec, not that one targets
+		// this host: PortForge builds for platforms it does not run on, so the host
+		// is the platform picker's default rather than a filter.
+		//
+		// Declaration order is chronological, oldest first, so the newest version
+		// is the last one declared — not the first, which is where a file's
+		// defaultVersion often sits when the newest release is a pre-release.
+		if specs, err := metadata.LoadInstallationSpecs(a.metadataPath, v.ItemTitle); err == nil && len(specs) > 0 {
+			st.Buildable = true
+			if order := engine.VersionOrder(specs); len(order) > 0 {
+				st.LatestVersion = order[len(order)-1]
+			}
 		}
 
-		wailsruntime.EventsEmit(a.ctx, "rom:ended", map[string]interface{}{
-			"itemTitle":   itemTitle,
-			"playSeconds": playSeconds,
-		})
-	}()
+		versionDir := filepath.Join(a.dataPath, metadata.PortItemType, v.ItemTitle)
+		if state, err := metadata.ReadInstallState(versionDir); err == nil && state != nil {
+			st.Installed = state.Installed
+			st.InstalledVersion = state.InstalledVersion
+			st.LastPlayedAt = state.LastPlayedAt
+		}
 
-	return nil
+		ready, hasDeps := romReady[v.ItemTitle]
+		st.HasROMDeps = hasDeps
+		st.ROMsReady = !hasDeps || ready
+
+		out[v.ItemTitle] = st
+	}
+	return out, nil
+}
+
+// romReadinessFromDisk is the fallback for when the SQLite index is unavailable:
+// it reads each version's dependencies from the catalog and checks the ROM library
+// on disk. Versions with no dependencies are omitted, matching the index query.
+func (a *App) romReadinessFromDisk(versions []models.VideoGameVersion) map[string]bool {
+	hashes, err := metadata.ScanROMLibrary(a.dataPath)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]bool)
+	for i := range versions {
+		v, err := a.loadVersion(versions[i].ItemTitle)
+		if err != nil || v == nil || len(v.ROMDependencies) == 0 {
+			continue
+		}
+		// Every required requirement must be met by one of its options; the
+		// optional ones add content and never hold a port back.
+		ready := true
+		for _, req := range v.ROMDependencies {
+			if !req.Required {
+				continue
+			}
+			met := false
+			for _, opt := range req.Options {
+				for _, f := range opt.Formats {
+					if f.Checksums.MD5 == "" {
+						continue
+					}
+					if _, ok := hashes[f.Checksums.MD5]; ok {
+						met = true
+					}
+				}
+			}
+			if !met {
+				ready = false
+			}
+		}
+		out[v.ItemTitle] = ready
+	}
+	return out
 }
 
 // GetROMStatus returns MD5 → present for every format needed by a version's ROM dependencies.
 func (a *App) GetROMStatus(itemTitle string) (map[string]bool, error) {
-	version, err := metadata.LoadOneVersion(a.metadataPath, itemTitle)
+	version, err := a.loadVersion(itemTitle)
 	if err != nil {
 		return nil, err
 	}
@@ -1306,7 +1097,7 @@ func (a *App) GetROMStatus(itemTitle string) (map[string]bool, error) {
 	}
 
 	status := make(map[string]bool)
-	for _, rom := range version.ROMDependencies {
+	for _, rom := range version.ROMDependencies.AllOptions() {
 		for _, f := range rom.Formats {
 			if f.Checksums.MD5 == "" {
 				continue
@@ -1319,6 +1110,50 @@ func (a *App) GetROMStatus(itemTitle string) (map[string]bool, error) {
 		}
 	}
 	return status, nil
+}
+
+// GetROMLibrary returns every ROM requirement declared by every port, together
+// with one presence map covering all of them.
+//
+// It exists so the ROM library is a single call rather than one GetROMStatus per
+// port: the presence lookups collapse to one pass, and a dump two ports both
+// accept is resolved once. Ports declaring no requirements are omitted — the
+// view is about ROMs, and an empty heading says nothing.
+func (a *App) GetROMLibrary() (*models.ROMLibrary, error) {
+	versions, err := a.GetVersions()
+	if err != nil {
+		return nil, err
+	}
+
+	// Both fields are non-nil even when nothing matches, so the frontend never
+	// has to distinguish an empty library from a missing one.
+	lib := &models.ROMLibrary{Ports: []models.ROMLibraryPort{}, Status: map[string]bool{}}
+	for _, v := range versions {
+		// loadVersion is what hydrates an option's formats from the standalone
+		// ROM MediaItem. Going through it rather than reading the summary rows
+		// keeps this view on the same data the game page sees.
+		full, err := a.loadVersion(v.ItemTitle)
+		if err != nil || full == nil || len(full.ROMDependencies) == 0 {
+			continue
+		}
+		lib.Ports = append(lib.Ports, models.ROMLibraryPort{
+			ItemTitle:    full.ItemTitle,
+			Title:        full.Title,
+			Requirements: full.ROMDependencies,
+		})
+		for _, opt := range full.ROMDependencies.AllOptions() {
+			for _, f := range opt.Formats {
+				if f.Checksums.MD5 == "" {
+					continue
+				}
+				if _, seen := lib.Status[f.Checksums.MD5]; seen {
+					continue
+				}
+				lib.Status[f.Checksums.MD5] = a.store != nil && a.store.IsROMPresent(f.Checksums.MD5)
+			}
+		}
+	}
+	return lib, nil
 }
 
 // AddROMFiles copies or moves dropped files into the matching VideoGameRom folder.
@@ -1421,7 +1256,7 @@ func (a *App) ImportROMs(matches []models.ROMFileMatch, move bool) error {
 }
 
 func (a *App) AddROMFiles(itemTitle string, paths []string, move bool) ([]string, error) {
-	version, err := metadata.LoadOneVersion(a.metadataPath, itemTitle)
+	version, err := a.loadVersion(itemTitle)
 	if err != nil {
 		return nil, err
 	}
@@ -1430,7 +1265,7 @@ func (a *App) AddROMFiles(itemTitle string, paths []string, move bool) ([]string
 	}
 
 	romsByMD5 := make(map[string]string)
-	for _, rom := range version.ROMDependencies {
+	for _, rom := range version.ROMDependencies.AllOptions() {
 		for _, f := range rom.Formats {
 			romsByMD5[f.Checksums.MD5] = rom.Title
 		}
@@ -1474,7 +1309,7 @@ func (a *App) AddROMFiles(itemTitle string, paths []string, move bool) ([]string
 			}
 			destDir = filepath.Join(a.dataPath, romType, entry.title)
 		} else {
-			destDir = filepath.Join(a.dataPath, "VideoGameVersion", itemTitle)
+			destDir = filepath.Join(a.dataPath, metadata.PortItemType, itemTitle)
 		}
 		if err := os.MkdirAll(destDir, 0755); err != nil {
 			return matched, fmt.Errorf("failed to create destination directory: %w", err)
@@ -1501,43 +1336,7 @@ func (a *App) AddROMFiles(itemTitle string, paths []string, move bool) ([]string
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-func (a *App) copyROMs(deps []models.ROMDependency, installDir string) error {
-	var foundHashes map[string]string
-	if a.store != nil {
-		foundHashes, _ = a.store.GetROMLocalPaths()
-	} else {
-		var err error
-		foundHashes, err = metadata.ScanROMLibrary(a.dataPath)
-		if err != nil {
-			return fmt.Errorf("failed to scan ROM library: %w", err)
-		}
-	}
-	for _, rom := range deps {
-		if rom.InstallPath == "" {
-			continue
-		}
-		var srcPath string
-		for _, f := range rom.Formats {
-			if p, ok := foundHashes[f.Checksums.MD5]; ok {
-				srcPath = p
-				break
-			}
-		}
-		if srcPath == "" {
-			return fmt.Errorf("required ROM not found: %s", rom.Title)
-		}
-		destPath := filepath.Join(installDir, rom.InstallPath)
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-			return err
-		}
-		if err := copyFile(srcPath, destPath); err != nil {
-			return fmt.Errorf("failed to copy ROM %s: %w", rom.Title, err)
-		}
-	}
-	return nil
-}
-
-func (a *App) writeInstallState(versionDir string, spec *models.InstallationSpec, exes []models.ExecutableEntry) error {
+func (a *App) writeInstallState(versionDir string, spec *engine.Spec, exes []models.ExecutableEntry, args map[string]string, targetPlatform string) error {
 	primaryPath := ""
 	if len(exes) > 0 {
 		primaryPath = exes[0].Path
@@ -1550,9 +1349,10 @@ func (a *App) writeInstallState(versionDir string, spec *models.InstallationSpec
 		Installed:        true,
 		InstalledVersion: version,
 		InstallDir:       filepath.Dir(primaryPath),
-		ExecutablePath:   primaryPath,
 		Executables:      exes,
 		ActiveMods:       []string{},
+		Args:             args,
+		TargetPlatform:   targetPlatform,
 		InstalledAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := metadata.WriteInstallState(versionDir, state); err != nil {
@@ -1562,171 +1362,11 @@ func (a *App) writeInstallState(versionDir string, spec *models.InstallationSpec
 	return nil
 }
 
-// evalCondition evaluates a step's "if" expression after interpolating args.
-// Supports "lhs != rhs" and "lhs == rhs"; bare values are truthy when non-empty and not "false".
-func evalCondition(expr string, args map[string]string) bool {
-	expr = strings.TrimSpace(interpolate(expr, args))
-	if idx := strings.Index(expr, "!="); idx >= 0 {
-		return strings.TrimSpace(expr[:idx]) != strings.TrimSpace(expr[idx+2:])
-	}
-	if idx := strings.Index(expr, "=="); idx >= 0 {
-		return strings.TrimSpace(expr[:idx]) == strings.TrimSpace(expr[idx+2:])
-	}
-	return expr != "" && expr != "false" && expr != "0"
-}
-
-// interpolate replaces $varName and ${varName} with values from args.
-func interpolate(s string, args map[string]string) string {
-	return argRe.ReplaceAllStringFunc(s, func(match string) string {
-		var key string
-		if strings.HasPrefix(match, "${") {
-			key = match[2 : len(match)-1]
-		} else {
-			key = match[1:]
-		}
-		if v, ok := args[key]; ok {
-			return v
-		}
-		return match
-	})
-}
-
-func checkDependencies(deps []string) error {
-	var missing []string
-	for _, dep := range deps {
-		if dep == "msys2" {
-			if runtime.GOOS == "windows" && findMSYS2() == "" {
-				missing = append(missing, "msys2 (install from https://www.msys2.org)")
-			}
-			continue
-		}
-		if _, err := exec.LookPath(dep); err != nil {
-			missing = append(missing, dep)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("missing build dependencies: %s", strings.Join(missing, ", "))
-	}
-	return nil
-}
-
-// findMSYS2 returns the root of the MSYS2 installation on Windows, or "" if not found.
-func findMSYS2() string {
-	candidates := []string{
-		`C:\msys64`,
-		`C:\msys2`,
-		filepath.Join(os.Getenv("USERPROFILE"), "msys64"),
-		filepath.Join(os.Getenv("USERPROFILE"), "msys2"),
-	}
-	for _, root := range candidates {
-		if info, err := os.Stat(filepath.Join(root, "usr", "bin")); err == nil && info.IsDir() {
-			return root
-		}
-	}
-	return ""
-}
-
-// prependMSYS2Path returns a copy of env with the MSYS2 bin directories prepended to PATH.
-func prependMSYS2Path(env []string, msys2Root string) []string {
-	extra := strings.Join([]string{
-		filepath.Join(msys2Root, "mingw64", "bin"),
-		filepath.Join(msys2Root, "usr", "local", "bin"),
-		filepath.Join(msys2Root, "usr", "bin"),
-	}, string(os.PathListSeparator))
-	for i, e := range env {
-		if strings.HasPrefix(strings.ToUpper(e), "PATH=") {
-			env[i] = e[:5] + extra + string(os.PathListSeparator) + e[5:]
-			return env
-		}
-	}
-	return append(env, "PATH="+extra)
-}
-
-func mergeEnv(extra map[string]string) []string {
-	env := os.Environ()
-	for k, v := range extra {
-		env = append(env, k+"="+v)
-	}
-	return env
-}
-
-func stepLabel(step models.BuildStep) string {
-	switch step.Step {
-	case "cd":
-		return "cd " + step.Path
-	case "fetch":
-		return "fetch " + step.URL
-	case "extract":
-		return "extract " + step.Src
-	case "copy":
-		if step.From == "rom" {
-			return "copy rom → " + step.Dest
-		}
-		return "copy " + step.Src + " → " + step.Dest
-	case "move":
-		return "move " + step.Src + " → " + step.Dest
-	case "make":
-		return "make " + strings.Join(step.Args, " ")
-	case "createDir":
-		return "createDir " + step.Path
-	case "touch":
-		return "touch " + step.Path
-	case "deletePath":
-		return "deletePath " + step.Path
-	case "defineExecutable":
-		return "defineExecutable " + step.Executable
-	default:
-		return step.Step
-	}
-}
-
-func fetchFile(url, dest string) error {
-	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		return err
-	}
-	resp, err := httpClient.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d fetching %s", resp.StatusCode, url)
-	}
-	f, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
-	return err
-}
-
-func streamOutput(r io.Reader, w io.Writer) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		fmt.Fprintln(w, scanner.Text())
-	}
-}
-
 func (a *App) emitProgress(phase string, percent int) {
-	wailsruntime.EventsEmit(a.ctx, "install:progress", map[string]interface{}{
-		"phase":   phase,
-		"percent": percent,
-	})
-}
-
-func (a *App) emitStep(index, total int, label string) {
-	wailsruntime.EventsEmit(a.ctx, "install:step", map[string]interface{}{
-		"index": index,
-		"total": total,
-		"label": label,
-	})
-}
-
-func (a *App) emitFailed(step, errMsg string) {
-	wailsruntime.EventsEmit(a.ctx, "install:failed", map[string]interface{}{
-		"step":  step,
-		"error": errMsg,
+	a.emit("install:progress", map[string]interface{}{
+		"itemTitle": a.GetActiveInstall(),
+		"phase":     phase,
+		"percent":   percent,
 	})
 }
 
@@ -1751,65 +1391,6 @@ func (pr *progressReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-func (a *App) downloadFile(url string, dest *os.File) error {
-	resp, err := httpClient.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	pr := &progressReader{
-		r:     resp.Body,
-		total: resp.ContentLength,
-		onPct: func(pct int) { a.emitProgress("downloading", pct) },
-	}
-	_, err = io.Copy(dest, pr)
-	return err
-}
-
-func extractZip(src, destDir string) error {
-	r, err := zip.OpenReader(src)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	destDir = filepath.Clean(destDir)
-
-	for _, f := range r.File {
-		destPath := filepath.Join(destDir, f.Name)
-		rel, err := filepath.Rel(destDir, destPath)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			return fmt.Errorf("invalid path in zip: %s", f.Name)
-		}
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(destPath, 0755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode())
-		if err != nil {
-			rc.Close()
-			return err
-		}
-		_, err = io.Copy(out, rc)
-		out.Close()
-		rc.Close()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func fileMD5(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -1821,48 +1402,6 @@ func fileMD5(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// copyPath copies src to dest, handling both files and directories.
-// For files, parent directories of dest are created automatically.
-// For directories, dest becomes a copy of src (recursive).
-func copyPath(src, dest string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if info.IsDir() {
-		return copyDirRecursive(src, dest)
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		return err
-	}
-	return copyFile(src, dest)
-}
-
-
-// copyDirRecursive copies src directory and all its contents into dest.
-func copyDirRecursive(src, dest string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dest, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode())
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
-		}
-		return copyFile(path, target)
-	})
 }
 
 func copyFile(src, dst string) error {
@@ -1878,4 +1417,116 @@ func copyFile(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// ── StorageUnits ─────────────────────────────────────────────────────────────
+// The shared, ordered list of folders finished output is written to. The file
+// behind these is read and written by every program in the suite, so the
+// behaviour lives in the storageunits package and matches the suite README
+// rather than being reimplemented here.
+
+// syncDataPath points this program's storage root at the highest-priority unit.
+//
+// By priority, deliberately not by reachability. Falling through to the next unit
+// when the top one is unplugged would silently relocate the library: installs
+// recorded under one folder would be looked for in another, and the user would be
+// told their games are missing rather than that a drive is disconnected. An
+// unreachable top unit is reported as unavailable and stays the root.
+//
+// This is a single-unit reading of a multi-unit list, and it is deliberate.
+// Placing across several units needs a lookup that survives a unit being offline —
+// the shared item index — and until that exists PortForge uses one.
+func (a *App) syncDataPath() {
+	if a.units == nil {
+		return
+	}
+	units, err := a.units.List()
+	if err != nil || len(units) == 0 {
+		a.dataPath = ""
+		return
+	}
+	a.dataPath = units[0].Path
+}
+
+// GetStorageUnits returns the units in priority order with live space figures.
+func (a *App) GetStorageUnits() ([]storageunits.Unit, error) {
+	if a.units == nil {
+		return nil, fmt.Errorf("the shared storage settings could not be opened")
+	}
+	return a.units.List()
+}
+
+// AddStorageUnit prompts for a folder and appends it as the lowest-priority
+// unit. An empty return means the user cancelled, which is not an error.
+func (a *App) AddStorageUnit() (*storageunits.Unit, error) {
+	if a.units == nil {
+		return nil, fmt.Errorf("the shared storage settings could not be opened")
+	}
+	if err := a.requireNativeDialogs("Choosing a folder"); err != nil {
+		return nil, err
+	}
+	path, err := wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "Choose a folder to store media in",
+	})
+	if err != nil || path == "" {
+		return nil, err
+	}
+	u, err := a.units.Add(path)
+	if err != nil {
+		return nil, err
+	}
+	a.syncDataPath()
+	return &u, nil
+}
+
+// RemoveStorageUnit forgets a location. It never touches what is stored there:
+// content on a removed unit is the user's, exactly as on a drive they unplugged.
+func (a *App) RemoveStorageUnit(id string) error {
+	if a.units == nil {
+		return fmt.Errorf("the shared storage settings could not be opened")
+	}
+	if err := a.units.Remove(id); err != nil {
+		return err
+	}
+	a.syncDataPath()
+	return nil
+}
+
+// RenameStorageUnit changes a unit's display label only.
+func (a *App) RenameStorageUnit(id, name string) error {
+	if a.units == nil {
+		return fmt.Errorf("the shared storage settings could not be opened")
+	}
+	return a.units.Rename(id, name)
+}
+
+// ReorderStorageUnits sets the priority order. It takes every id exactly once,
+// so a stale UI cannot drop or invent a unit by reordering.
+func (a *App) ReorderStorageUnits(ids []string) error {
+	if a.units == nil {
+		return fmt.Errorf("the shared storage settings could not be opened")
+	}
+	if err := a.units.Reorder(ids); err != nil {
+		return err
+	}
+	a.syncDataPath()
+	return nil
+}
+
+// OpenStorageUnit shows a unit's folder in the desktop file manager.
+func (a *App) OpenStorageUnit(id string) error {
+	units, err := a.GetStorageUnits()
+	if err != nil {
+		return err
+	}
+	for _, u := range units {
+		if u.ID != id {
+			continue
+		}
+		if u.Unreachable {
+			return fmt.Errorf("%s can't be opened — it isn't connected right now", u.Name)
+		}
+		return openInFileManager(u.Path)
+	}
+	return fmt.Errorf("no such save location")
 }

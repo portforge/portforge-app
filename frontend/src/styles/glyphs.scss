@@ -1,0 +1,86 @@
+/* Chevrons and status glyphs, built from borders rather than icon files.
+   Global rather than scoped to one component: the ROM requirement list is
+   rendered by both the game page and the ROM library, and a glyph that existed
+   in only one of them would make the same row look different in each. */
+.chevron-left,
+.chevron-down {
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  flex-shrink: 0;
+}
+
+.chevron-left { transform: rotate(135deg); }
+.chevron-down { transform: rotate(45deg) translateY(-2px); }
+.chevron-down.open { transform: rotate(-135deg) translateY(-2px); }
+
+.icon-check,
+.icon-cross-sm {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.icon-check {
+  background: var(--ok);
+
+  &::after {
+    content: "";
+    width: 7px;
+    height: 3.5px;
+    border-left: 2px solid var(--panel);
+    border-bottom: 2px solid var(--panel);
+    transform: rotate(-45deg) translate(1px, -1px);
+  }
+}
+
+.icon-cross-sm {
+  border: 1.5px solid var(--line2);
+
+  &::before,
+  &::after {
+    content: "";
+    position: absolute;
+    width: 8px;
+    height: 1.5px;
+    background: var(--bad);
+  }
+  &::before { transform: rotate(45deg); }
+  &::after { transform: rotate(-45deg); }
+  &.bad { border-color: var(--bad); }
+}
+
+.icon-cross,
+.icon-warn {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bad);
+  flex-shrink: 0;
+  position: relative;
+
+  &::before,
+  &::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 9px;
+    height: 1.5px;
+    background: var(--bad);
+  }
+  &::before { transform: translate(-50%, -50%) rotate(45deg); }
+  &::after { transform: translate(-50%, -50%) rotate(-45deg); }
+}
+
+.icon-warn {
+  border-color: var(--warn);
+  &::before { transform: translate(-50%, -50%) rotate(90deg); height: 9px; width: 1.5px; background: var(--warn); }
+  &::after { display: none; }
+}

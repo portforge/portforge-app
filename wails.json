@@ -5,5 +5,12 @@
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
-  "frontend:dev:serverUrl": "auto"
+  "frontend:dev:serverUrl": "auto",
+  "info": {
+    "companyName": "zamiba",
+    "productName": "PortForge",
+    "productVersion": "0.2.0",
+    "copyright": "Copyright © 2026 zamiba. Licensed under the GNU GPL v3.",
+    "comments": "Manage, build and launch recompilation and decompilation ports of video games."
+  }
 }

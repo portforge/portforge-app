@@ -60,47 +60,77 @@ type ROMChecksums struct {
 	CRC32  string `json:"crc32"`
 }
 
-type ROMDependency struct {
-	ItemType    string      `json:"_itemType"`
-	Title       string      `json:"title"`
-	Formats     []ROMFormat `json:"formats"`
-	InstallPath string      `json:"installPath,omitempty"`
+// ROMOption is one dump that can satisfy a requirement. Formats are not stored
+// in the version's own JSON — they are hydrated from the standalone ROM
+// MediaItem so checksum data lives in exactly one place.
+type ROMOption struct {
+	ItemType string      `json:"_itemType"`
+	Title    string      `json:"title"`
+	Formats  []ROMFormat `json:"formats,omitempty"`
 }
 
-// BuildStep is a single step in a version's build process.
-type BuildStep struct {
-	Step string `json:"step"`
-	If   string `json:"if,omitempty"` // optional condition; step is skipped when it evaluates to false
-	// copy
-	From string `json:"from,omitempty"`
-	Arg  string `json:"arg,omitempty"`  // references an ArgSpec key; used by copy+rom to get the romTitle from the selected option
-	Src  string `json:"src,omitempty"`
-	Dest string `json:"dest,omitempty"`
-	// make
-	Args []string          `json:"args,omitempty"`
-	Env  map[string]string `json:"env,omitempty"`
-	// fetch
-	URL string `json:"url,omitempty"`
-	// file
-	Path string `json:"path,omitempty"`
-	// defineExecutable
-	Executable string `json:"executable,omitempty"` // path to the binary relative to the version's MediaItem folder
-	Title      string `json:"title,omitempty"`      // label shown on the Play button; defaults to the executable filename
+// ROMRequirement is one thing a port needs, satisfied by any one of its
+// options. Requirements combine with AND, options within a requirement with OR,
+// which is what lets a three-disc game say "each disc, any region" without
+// enumerating the fifteen valid combinations.
+//
+// Required means the port is unusable without it, not that the build needs it.
+// Newer ports increasingly extract assets on first run rather than at build
+// time, so a port can install and launch with nothing here satisfied and still
+// declare a requirement it genuinely cannot be played without.
+type ROMRequirement struct {
+	// Name identifies the requirement: it is the heading the UI shows ("Disc 2")
+	// and the string a spec step addresses with copy from:"rom" src:"Disc 2". It
+	// is unique within a version, and it is an identifier rather than a caption —
+	// renaming one silently breaks any spec that references it.
+	Name     string      `json:"name,omitempty"`
+	Required bool        `json:"required"`
+	Options  []ROMOption `json:"options"`
 }
 
-// ArgOption is one selectable value for a choice arg.
+// ROMDependencies is a version's full set of ROM requirements.
+type ROMDependencies []ROMRequirement
+
+// ROMLibraryPort is one port's requirements as the ROM library shows them.
+type ROMLibraryPort struct {
+	ItemTitle    string          `json:"_itemTitle"`
+	Title        string          `json:"title"`
+	Requirements ROMDependencies `json:"romDependencies"`
+}
+
+// ROMLibrary is every ROM requirement across every port, with a single presence
+// map covering all of them.
+//
+// Satisfaction is deliberately not computed here. Whether a requirement is met
+// is a rule about options and formats that the game page already applies, and
+// two implementations of it would eventually disagree — so the backend supplies
+// the facts (which dumps exist, which are present) and one shared frontend
+// helper draws the conclusion for both views.
+type ROMLibrary struct {
+	Ports []ROMLibraryPort `json:"ports"`
+	// Status maps a format's MD5 to whether the user has that file, keyed
+	// exactly as the catalog writes it so a lookup needs no normalising.
+	Status map[string]bool `json:"status"`
+}
+
+// AllOptions returns every option across every requirement, for the callers that
+// only care whether a given dump is referenced at all.
+func (d ROMDependencies) AllOptions() []ROMOption {
+	var out []ROMOption
+	for _, r := range d {
+		out = append(out, r.Options...)
+	}
+	return out
+}
+
+// The install spec types — steps, args and the spec itself — live in
+// github.com/zamiba/forge/engine, which owns executing them. The types below
+// are PortForge's own: what it shows in the UI and what it persists to disk.
+
+// ArgOption is one selectable value for a choice arg, as shown in the UI.
 type ArgOption struct {
-	Value     string `json:"value"`
-	Label     string `json:"label"`
-	ROMTitle  string `json:"romTitle,omitempty"`  // exact romDependency title used when this option is selected
-	ROMsReady bool   `json:"romsReady,omitempty"` // populated at runtime by PortForge, not stored in JSON
-}
-
-// ArgSpec describes a single install argument.
-type ArgSpec struct {
-	Type    string      `json:"type"`            // "choice" | "string"
-	Label   string      `json:"label"`
-	Options []ArgOption `json:"options,omitempty"` // for type "choice"
+	Value string `json:"value"`
+	Label string `json:"label"`
 }
 
 // ArgPrompt is returned to the frontend so it can collect arg values before installing.
@@ -109,17 +139,6 @@ type ArgPrompt struct {
 	Type    string      `json:"type"`
 	Label   string      `json:"label"`
 	Options []ArgOption `json:"options,omitempty"`
-}
-
-// InstallationSpec is one entry in the .install.json array.
-type InstallationSpec struct {
-	Version         string             `json:"version,omitempty"`
-	TargetPlatforms []string           `json:"targetPlatforms,omitempty"`
-	Dependencies    []string           `json:"dependencies,omitempty"`
-	Args            map[string]ArgSpec `json:"args,omitempty"`
-	Steps           []BuildStep        `json:"steps"`
-	BuildPaths      []string           `json:"buildPaths,omitempty"`
-	UninstallSteps  []BuildStep        `json:"uninstallSteps,omitempty"`
 }
 
 // ExecutableEntry describes a launchable executable produced by an install.
@@ -132,20 +151,13 @@ type InstallState struct {
 	Installed        bool              `json:"installed"`
 	InstalledVersion string            `json:"installedVersion"`
 	InstallDir       string            `json:"installDir"`
-	ExecutablePath   string            `json:"executablePath"` // legacy; use Executables[0] when present
 	Executables      []ExecutableEntry `json:"executables,omitempty"`
 	ActiveMods       []string          `json:"activeMods"`
+	Args             map[string]string `json:"args,omitempty"`           // arg values the build was made with
+	TargetPlatform   string            `json:"targetPlatform,omitempty"` // platform the build targeted
 	InstalledAt      string            `json:"installedAt"`
 	TotalPlaySeconds int64             `json:"totalPlaySeconds"`
 	LastPlayedAt     string            `json:"lastPlayedAt,omitempty"`
-}
-
-// RomState is the persisted .state/meta.json for a VideoGameRom: play tracking
-// plus the last format launched (so Play can default to it next time).
-type RomState struct {
-	LastFormat       string `json:"lastFormat,omitempty"`
-	TotalPlaySeconds int64  `json:"totalPlaySeconds"`
-	LastPlayedAt     string `json:"lastPlayedAt,omitempty"`
 }
 
 type Mod struct {
@@ -177,51 +189,36 @@ type GameVersion struct {
 	Platforms   []Platform `json:"platforms"`
 }
 
+// SoftwareVersion is one released version of a port, as listed in a
+// VideoGameVersion's versions array. Title matches the version field of an object
+// in the same item's .forge.json, which is what makes a release's notes findable
+// from the version the user picked. Content is markdown.
+type SoftwareVersion struct {
+	ItemType string `json:"_itemType"`
+	Title    string `json:"title"`
+	Date     string `json:"date,omitempty"`
+	Content  string `json:"content,omitempty"`
+}
+
 // VideoGameVersion is a top-level MediaItem representing a standalone version/port.
 type VideoGameVersion struct {
-	ItemType        string          `json:"_itemType"`
-	SchemaVersion   string          `json:"_schemaVersion"`
-	ItemTitle       string          `json:"_itemTitle"`
-	Title           string          `json:"title,omitempty"`
-	ReleaseYear     int             `json:"releaseYear"`
-	VersionType     string          `json:"versionType"`
-	VideoGame       *ItemRef        `json:"videoGame,omitempty"`
-	Platforms       []string        `json:"platforms"`
-	Mods            []Mod           `json:"mods,omitempty"`
-	ROMDependencies []ROMDependency `json:"romDependencies,omitempty"`
-	Artwork         []Artwork       `json:"artwork,omitempty"`
-	Description     string          `json:"description,omitempty"`
-	Tags            []string        `json:"tags,omitempty"`
-	CreatedAt       string          `json:"_createdAt,omitempty"`
-	LastUpdatedAt   string          `json:"lastUpdatedAt,omitempty"`
-	DataSources     []DataSource    `json:"_dataSources,omitempty"`
-}
-
-// OpticalDrive represents a detected optical drive and its current state.
-type OpticalDrive struct {
-	Path       string `json:"path"`       // device node: /dev/sr0, D:\, /dev/disk2
-	RawPath    string `json:"rawPath"`    // raw device for direct sector reads
-	Label      string `json:"label"`      // drive or disc label for display
-	HasDisc    bool   `json:"hasDisc"`
-	MountPoint string `json:"mountPoint"` // empty if disc is not mounted
-}
-
-// DiscInfo holds the result of probing an inserted disc.
-type DiscInfo struct {
-	Drive      string `json:"drive"`
-	DiscType   string `json:"discType"`   // "cd", "dvd", "bd", "data", "unknown"
-	System     string `json:"system"`     // "psx", "ps2", "gamecube", "wii", "xbox", "xbox360", ""
-	Serial     string `json:"serial"`     // game serial if extracted (e.g. "SLUS-00594")
-	Volume     string `json:"volume"`     // ISO 9660 volume label
-	MountPoint string `json:"mountPoint"`
-}
-
-// DumpProgress is emitted during and after a redumper session.
-type DumpProgress struct {
-	Drive   string  `json:"drive"`
-	Phase   string  `json:"phase"`   // "dumping", "verifying", "done", "error"
-	Percent float64 `json:"percent"`
-	Error   string  `json:"error,omitempty"`
+	ItemType        string            `json:"_itemType"`
+	SchemaVersion   string            `json:"_schemaVersion"`
+	ItemTitle       string            `json:"_itemTitle"`
+	Title           string            `json:"title,omitempty"`
+	ReleaseYear     int               `json:"releaseYear"`
+	VersionType     string            `json:"versionType"`
+	VideoGame       *ItemRef          `json:"videoGame,omitempty"`
+	Platforms       []string          `json:"platforms"`
+	Mods            []Mod             `json:"mods,omitempty"`
+	Versions        []SoftwareVersion `json:"versions,omitempty"`
+	ROMDependencies ROMDependencies   `json:"romDependencies,omitempty"`
+	Artwork         []Artwork         `json:"artwork,omitempty"`
+	Description     string            `json:"description,omitempty"`
+	Tags            []string          `json:"tags,omitempty"`
+	CreatedAt       string            `json:"_createdAt,omitempty"`
+	LastUpdatedAt   string            `json:"lastUpdatedAt,omitempty"`
+	DataSources     []DataSource      `json:"_dataSources,omitempty"`
 }
 
 type VideoGame struct {

@@ -4,10 +4,20 @@
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
     <title>portforge</title>
+    <script>
+        // Set the theme before first paint. Without this the window shows one
+        // light frame before Vue mounts, which is very visible on a dark desktop.
+        (function () {
+            var stored = localStorage.getItem('portforge.theme')
+            var theme = stored === 'light' || stored === 'dark'
+                ? stored
+                : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            document.documentElement.setAttribute('data-theme', theme)
+        })()
+    </script>
 </head>
 <body>
 <div id="app"></div>
 <script src="./src/main.js" type="module"></script>
 </body>
 </html>
-

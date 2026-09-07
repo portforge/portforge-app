@@ -2,7 +2,10 @@ package main
 
 import (
 	"embed"
+	"flag"
+	"fmt"
 	"net/http"
+	"os"
 	"runtime"
 
 	"github.com/wailsapp/wails/v2"
@@ -14,7 +17,21 @@ import (
 var assets embed.FS
 
 func main() {
+	// Server mode exists for systems whose webview renders the UI badly; on
+	// Linux that is WebKitGTK, which the desktop build has no way around.
+	server := flag.Bool("server", false, "serve the UI over HTTP instead of opening a window, and print the URL")
+	addr := flag.String("addr", "127.0.0.1:34116", "address to serve on with -server")
+	flag.Parse()
+
 	app := NewApp()
+
+	if *server {
+		if err := runServer(app, *addr, assets); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// On Linux, gtk_drag_dest_unset (triggered by DisableWebViewDrop:true) removes
 	// WebKitGTK's DnD target registration and prevents the drag-data-received /
@@ -28,14 +45,11 @@ func main() {
 		Width:  1920,
 		Height: 1080,
 		AssetServer: &assetserver.Options{
-			Assets:  assets,
-			Handler: http.StripPrefix("/mediaitems/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if app.metadataPath == "" {
-					http.NotFound(w, r)
-					return
-				}
-				http.FileServer(http.Dir(app.metadataPath)).ServeHTTP(w, r)
-			})),
+			Assets: assets,
+			Handler: http.StripPrefix("/mediaitems/", artworkHandler(
+				func() string { return app.metadataPath },
+				thumbCacheDir(),
+			)),
 		},
 		BackgroundColour:         &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:                app.startup,

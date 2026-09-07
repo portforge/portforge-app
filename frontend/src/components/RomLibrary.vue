@@ -1,221 +1,193 @@
 <script setup>
-import { computed } from 'vue'
-import { artworkAspectRatio, primaryArtwork, defaultArtworkType } from '../utils/artwork.js'
+import { ref, computed, watch, onMounted } from 'vue'
+import { GetROMLibrary, SelectROMFiles, AddROMFiles } from '../../wailsjs/go/main/App'
+import { useRomRequirements } from '../composables/useRomRequirements'
+import RomRequirements from './RomRequirements.vue'
 
 const props = defineProps({
-  roms:     { type: Array,  required: true },
-  status:   { type: Object, required: true },
-  platform: { type: Object, default: null },  // GamingPlatform entry from RomPlatforms
+  // Bumped by App.vue whenever ROMs are imported, so the view reflects a drop
+  // that happened while it was open.
+  refreshKey: { type: Number, default: 0 },
 })
 
-const emit = defineEmits(['select', 'back'])
+const library = ref({ ports: [], status: {} })
+const loading = ref(true)
+const error = ref(null)
+const addingFor = ref(null)
+const addError = ref(null)
 
-const enc = encodeURIComponent
+const { optionPresent, requirementMet } = useRomRequirements(() => library.value.status)
 
-const sortedRoms = computed(() =>
-  props.roms
-    .filter(r => props.status[r._itemTitle]
-      && (!props.platform || r._itemType === props.platform.gamesItemType))
-    .sort((a, b) => (a.title || a._itemTitle).localeCompare(b.title || b._itemTitle))
-)
-
-function coverUrl(rom) {
-  const art = primaryArtwork(rom.artwork, rom._itemType)
-  if (!art) return null
-  return `/mediaitems/${enc(rom._itemType)}/${enc(rom._itemTitle)}/.artwork/${enc(art.fileName)}`
+async function load() {
+  error.value = null
+  try {
+    library.value = (await GetROMLibrary()) ?? { ports: [], status: {} }
+  } catch (e) {
+    error.value = String(e)
+  } finally {
+    loading.value = false
+  }
 }
 
-function cardAspectRatio(rom) {
-  const art = primaryArtwork(rom.artwork, rom._itemType)
-  const type = art?.artworkType ?? defaultArtworkType(rom._itemType)
-  return artworkAspectRatio(type)
+onMounted(load)
+watch(() => props.refreshKey, load)
+
+// Every dump this catalog knows about, deduplicated: two ports accepting the
+// same ROM is one file on disk, and counting it twice would overstate both the
+// total and what is missing.
+const totals = computed(() => {
+  const seen = new Map()
+  for (const port of library.value.ports ?? []) {
+    for (const req of port.romDependencies ?? []) {
+      for (const opt of req.options ?? []) {
+        const key = `${opt._itemType} ${opt.title}`
+        if (!seen.has(key)) seen.set(key, optionPresent(opt) === true)
+      }
+    }
+  }
+  return { held: [...seen.values()].filter(Boolean).length, known: seen.size }
+})
+
+// Progress over all of a port's requirements, not only the required ones. The
+// game page's badge answers "can I play this"; this answers "how much of what
+// this port can use do I have", which is the ROM library's question. Each row
+// still carries its own required / adds content flag, so the two never look
+// contradictory.
+function portProgress(port) {
+  const reqs = port.romDependencies ?? []
+  return { met: reqs.filter(requirementMet).length, total: reqs.length }
 }
 
-function formatSize(bytes) {
-  if (!bytes) return '—'
-  if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB'
-  if (bytes >= 1048576)    return (bytes / 1048576).toFixed(1) + ' MB'
-  if (bytes >= 1024)       return (bytes / 1024).toFixed(1) + ' KB'
-  return bytes + ' B'
+// Files are matched by checksum, so which port's button was pressed only
+// decides where an unmatched file is reported — anything recognised is filed
+// correctly regardless.
+async function addFiles(port) {
+  addError.value = null
+  addingFor.value = port._itemTitle
+  try {
+    const paths = await SelectROMFiles()
+    if (!paths?.length) return
+    const matched = await AddROMFiles(port._itemTitle, paths, false)
+    if (!matched?.length) {
+      addError.value = `None of the selected files matched a ROM ${port.title || port._itemTitle} can use.`
+    }
+    await load()
+  } catch (e) {
+    addError.value = String(e)
+  } finally {
+    addingFor.value = null
+  }
 }
 </script>
 
 <template>
   <div class="rom-library">
-    <button v-if="platform" class="back-btn" @click="emit('back')">&#8592; Platforms</button>
-    <p v-if="sortedRoms.length === 0" class="empty">No ROMs in your library yet. Drop ROM files onto this window to add them.</p>
+    <header class="head">
+      <h1>ROMs</h1>
+      <p class="sub">
+        Every ROM the ports in your catalog can use. Files are identified by
+        checksum, so a rename or a different extension makes no difference:
+        drop them anywhere on this window to add them.
+      </p>
+      <p v-if="!loading && totals.known" class="tally mono">
+        {{ totals.held }} of {{ totals.known }} known dumps in your library
+      </p>
+    </header>
 
-    <ul v-else class="rom-list">
-      <li v-for="rom in sortedRoms" :key="rom._itemTitle">
-        <button class="rom-card" @click="emit('select', rom)">
+    <p v-if="error" class="error-text">{{ error }}</p>
+    <p v-if="addError" class="error-text">{{ addError }}</p>
 
-          <!-- artwork or empty square placeholder -->
-          <div class="card-art" :style="{ aspectRatio: cardAspectRatio(rom) }">
-            <img
-              v-if="coverUrl(rom)"
-              :src="coverUrl(rom)"
-              :alt="rom.title || rom._itemTitle"
-            />
-          </div>
+    <p v-if="loading" class="empty">Loading&hellip;</p>
+    <p v-else-if="!library.ports?.length" class="empty">
+      No port in your catalog declares a ROM requirement.
+    </p>
 
-          <div class="card-info">
-            <span class="card-title">{{ rom.title || rom._itemTitle }}</span>
-            <span v-if="rom.platform" class="card-platform">{{ rom.platform }}</span>
-          </div>
+    <section v-for="port in library.ports" :key="port._itemTitle" class="port">
+      <div class="port-head">
+        <h2>{{ port.title || port._itemTitle }}</h2>
+        <span class="progress mono">
+          {{ portProgress(port).met }} of {{ portProgress(port).total }}
+        </span>
+        <button
+          class="btn-outline add"
+          :disabled="addingFor === port._itemTitle"
+          @click="addFiles(port)"
+        >{{ addingFor === port._itemTitle ? 'Adding&hellip;' : 'Add file&hellip;' }}</button>
+      </div>
 
-        </button>
-      </li>
-    </ul>
+      <!-- The same list the game page shows, so a row means the same thing in
+           both places. Rows start collapsed here: this view spans every port,
+           and opening each unmet dump would bury the summary. -->
+      <RomRequirements
+        :requirements="port.romDependencies"
+        :status="library.status"
+      />
+    </section>
   </div>
 </template>
 
 <style lang="scss" scoped>
 .rom-library {
-  padding: 24px;
-  height: 100%;
+  padding: var(--pad-page);
+  max-width: 760px;
 }
 
-.back-btn {
-  background: none;
-  border: none;
-  color: #8b929a;
-  font: inherit;
+.head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+
+.sub {
+  margin: 8px 0 0;
+  max-width: 62ch;
   font-size: 13px;
-  padding: 0;
-  margin-bottom: 16px;
-  cursor: pointer;
-  display: block;
-  &:hover { color: #d6d6d6; }
+  line-height: 1.5;
+  color: var(--dim);
+  text-wrap: pretty;
+}
+
+.tally {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--dim2);
 }
 
 .empty {
-  color: #8b929a;
-  text-align: center;
-  margin-top: 80px;
+  margin-top: 28px;
+  font-size: 13.5px;
+  color: var(--dim2);
 }
 
-.rom-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 8px;
-  align-items: start;
+.error-text {
+  margin-top: 20px;
+  font-size: 12.5px;
+  color: var(--bad);
 }
 
-/* ── Card ── */
-.rom-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 8px;
-  background: #32323280;
-  border: 1px solid #4c4c4c;
-  border-radius: 8px;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  width: 100%;
-  transition: background-color 0.12s, border-color 0.12s;
+.port { margin-top: 30px; }
 
-  &:hover {
-    background: #4d4d4d;
-    border-color: #d6d6d6;
-  }
-}
-
-/* ── Cover art / placeholder ── */
-.card-art {
-  width: 100%;
-  min-height: 40px; /* fallback for unknown artwork types */
-  flex-shrink: 0;
-  border-radius: 4px;
-  overflow: hidden;
-  background: #2a2a2a;
+.port-head {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 12px;
+  margin-bottom: 10px;
 
-  img {
-    width: 100%;
-    height: auto;
-    display: block;
+  h2 {
+    margin: 0;
+    font-size: 14.5px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text);
   }
 }
 
-/* ── Status badge ── */
-.status-badge {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 700;
-
-  &.have {
-    background: rgba(80, 200, 120, 0.85);
-    color: #0d1f14;
-  }
-  &.missing {
-    background: rgba(224, 108, 117, 0.85);
-    color: #2a090b;
-  }
+.progress {
+  font-size: 11.5px;
+  color: var(--dim2);
 }
 
-/* ── Info section ── */
-.card-info {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.card-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #c8c8c8;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.card-platform {
-  font-size: 11px;
-  color: #8b929a;
-}
-
-.card-formats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 2px;
-}
-
-.format-tag {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: #8b929a;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
-  padding: 1px 6px;
-}
-
-.format-size {
-  font-weight: 400;
-  text-transform: none;
-  color: #666;
-}
+.add { margin-left: auto; }
 </style>

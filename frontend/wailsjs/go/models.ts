@@ -1,9 +1,66 @@
+export namespace engine {
+	
+	export class SpecVersion {
+	    version: string;
+	    platforms: string[];
+	    default?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SpecVersion(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.platforms = source["platforms"];
+	        this.default = source["default"];
+	    }
+	}
+
+}
+
 export namespace main {
 	
+	export class CatalogInfo {
+	    sha: string;
+	    syncedAt: string;
+	    portCount: number;
+	    devMode: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CatalogInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sha = source["sha"];
+	        this.syncedAt = source["syncedAt"];
+	        this.portCount = source["portCount"];
+	        this.devMode = source["devMode"];
+	    }
+	}
+	export class LibraryStorage {
+	    path: string;
+	    available: boolean;
+	    totalBytes: number;
+	    freeBytes: number;
+	    libraryBytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new LibraryStorage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.available = source["available"];
+	        this.totalBytes = source["totalBytes"];
+	        this.freeBytes = source["freeBytes"];
+	        this.libraryBytes = source["libraryBytes"];
+	    }
+	}
 	export class Settings {
 	    dataPath: string;
-	    redumperPath?: string;
-	    duckstationPath?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -12,8 +69,6 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.dataPath = source["dataPath"];
-	        this.redumperPath = source["redumperPath"];
-	        this.duckstationPath = source["duckstationPath"];
 	    }
 	}
 
@@ -24,8 +79,6 @@ export namespace models {
 	export class ArgOption {
 	    value: string;
 	    label: string;
-	    romTitle?: string;
-	    romsReady?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ArgOption(source);
@@ -35,8 +88,6 @@ export namespace models {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.value = source["value"];
 	        this.label = source["label"];
-	        this.romTitle = source["romTitle"];
-	        this.romsReady = source["romsReady"];
 	    }
 	}
 	export class ArgPrompt {
@@ -183,9 +234,10 @@ export namespace models {
 	    installed: boolean;
 	    installedVersion: string;
 	    installDir: string;
-	    executablePath: string;
 	    executables?: ExecutableEntry[];
 	    activeMods: string[];
+	    args?: Record<string, string>;
+	    targetPlatform?: string;
 	    installedAt: string;
 	    totalPlaySeconds: number;
 	    lastPlayedAt?: string;
@@ -199,9 +251,10 @@ export namespace models {
 	        this.installed = source["installed"];
 	        this.installedVersion = source["installedVersion"];
 	        this.installDir = source["installDir"];
-	        this.executablePath = source["executablePath"];
 	        this.executables = this.convertValues(source["executables"], ExecutableEntry);
 	        this.activeMods = source["activeMods"];
+	        this.args = source["args"];
+	        this.targetPlatform = source["targetPlatform"];
 	        this.installedAt = source["installedAt"];
 	        this.totalPlaySeconds = source["totalPlaySeconds"];
 	        this.lastPlayedAt = source["lastPlayedAt"];
@@ -261,26 +314,6 @@ export namespace models {
 	        this.description = source["description"];
 	    }
 	}
-	export class OpticalDrive {
-	    path: string;
-	    rawPath: string;
-	    label: string;
-	    hasDisc: boolean;
-	    mountPoint: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new OpticalDrive(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.path = source["path"];
-	        this.rawPath = source["rawPath"];
-	        this.label = source["label"];
-	        this.hasDisc = source["hasDisc"];
-	        this.mountPoint = source["mountPoint"];
-	    }
-	}
 	export class ParentItemType {
 	    title: string;
 	    schemaVersion: string;
@@ -313,80 +346,6 @@ export namespace models {
 	        this.sha256 = source["sha256"];
 	        this.crc32 = source["crc32"];
 	    }
-	}
-	export class ROMFormat {
-	    filename: string;
-	    filesize: number;
-	    format: string;
-	    ext: string;
-	    checksums: ROMChecksums;
-	
-	    static createFrom(source: any = {}) {
-	        return new ROMFormat(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.filename = source["filename"];
-	        this.filesize = source["filesize"];
-	        this.format = source["format"];
-	        this.ext = source["ext"];
-	        this.checksums = this.convertValues(source["checksums"], ROMChecksums);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class ROMDependency {
-	    _itemType: string;
-	    title: string;
-	    formats: ROMFormat[];
-	    installPath?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ROMDependency(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this._itemType = source["_itemType"];
-	        this.title = source["title"];
-	        this.formats = this.convertValues(source["formats"], ROMFormat);
-	        this.installPath = source["installPath"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class ROMFileMatch {
 	    filePath: string;
@@ -443,21 +402,197 @@ export namespace models {
 		}
 	}
 	
-	
-	export class RomState {
-	    lastFormat?: string;
-	    totalPlaySeconds: number;
-	    lastPlayedAt?: string;
+	export class ROMFormat {
+	    filename: string;
+	    filesize: number;
+	    format: string;
+	    ext: string;
+	    checksums: ROMChecksums;
 	
 	    static createFrom(source: any = {}) {
-	        return new RomState(source);
+	        return new ROMFormat(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.lastFormat = source["lastFormat"];
-	        this.totalPlaySeconds = source["totalPlaySeconds"];
-	        this.lastPlayedAt = source["lastPlayedAt"];
+	        this.filename = source["filename"];
+	        this.filesize = source["filesize"];
+	        this.format = source["format"];
+	        this.ext = source["ext"];
+	        this.checksums = this.convertValues(source["checksums"], ROMChecksums);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ROMOption {
+	    _itemType: string;
+	    title: string;
+	    formats?: ROMFormat[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ROMOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this._itemType = source["_itemType"];
+	        this.title = source["title"];
+	        this.formats = this.convertValues(source["formats"], ROMFormat);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ROMRequirement {
+	    name?: string;
+	    required: boolean;
+	    options: ROMOption[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ROMRequirement(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.required = source["required"];
+	        this.options = this.convertValues(source["options"], ROMOption);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ROMLibraryPort {
+	    _itemTitle: string;
+	    title: string;
+	    romDependencies: ROMRequirement[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ROMLibraryPort(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this._itemTitle = source["_itemTitle"];
+	        this.title = source["title"];
+	        this.romDependencies = this.convertValues(source["romDependencies"], ROMRequirement);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ROMLibrary {
+	    ports: ROMLibraryPort[];
+	    status: Record<string, boolean>;
+	
+	    static createFrom(source: any = {}) {
+	        return new ROMLibrary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ports = this.convertValues(source["ports"], ROMLibraryPort);
+	        this.status = source["status"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
+	export class SoftwareVersion {
+	    _itemType: string;
+	    title: string;
+	    date?: string;
+	    content?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SoftwareVersion(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this._itemType = source["_itemType"];
+	        this.title = source["title"];
+	        this.date = source["date"];
+	        this.content = source["content"];
 	    }
 	}
 	export class VideoGame {
@@ -520,46 +655,6 @@ export namespace models {
 		    return a;
 		}
 	}
-	export class VideoGameRom {
-	    _itemType: string;
-	    _itemTitle: string;
-	    title: string;
-	    platform: string;
-	    formats: ROMFormat[];
-	    artwork?: Artwork[];
-	
-	    static createFrom(source: any = {}) {
-	        return new VideoGameRom(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this._itemType = source["_itemType"];
-	        this._itemTitle = source["_itemTitle"];
-	        this.title = source["title"];
-	        this.platform = source["platform"];
-	        this.formats = this.convertValues(source["formats"], ROMFormat);
-	        this.artwork = this.convertValues(source["artwork"], Artwork);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 	export class VideoGameVersion {
 	    _itemType: string;
 	    _schemaVersion: string;
@@ -570,7 +665,8 @@ export namespace models {
 	    videoGame?: ItemRef;
 	    platforms: string[];
 	    mods?: Mod[];
-	    romDependencies?: ROMDependency[];
+	    versions?: SoftwareVersion[];
+	    romDependencies?: ROMRequirement[];
 	    artwork?: Artwork[];
 	    description?: string;
 	    tags?: string[];
@@ -593,7 +689,8 @@ export namespace models {
 	        this.videoGame = this.convertValues(source["videoGame"], ItemRef);
 	        this.platforms = source["platforms"];
 	        this.mods = this.convertValues(source["mods"], Mod);
-	        this.romDependencies = this.convertValues(source["romDependencies"], ROMDependency);
+	        this.versions = this.convertValues(source["versions"], SoftwareVersion);
+	        this.romDependencies = this.convertValues(source["romDependencies"], ROMRequirement);
 	        this.artwork = this.convertValues(source["artwork"], Artwork);
 	        this.description = source["description"];
 	        this.tags = source["tags"];
@@ -619,6 +716,33 @@ export namespace models {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace storageunits {
+	
+	export class Unit {
+	    id: string;
+	    name: string;
+	    path: string;
+	    freeBytes: number;
+	    totalBytes: number;
+	    unreachable: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Unit(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.freeBytes = source["freeBytes"];
+	        this.totalBytes = source["totalBytes"];
+	        this.unreachable = source["unreachable"];
+	    }
 	}
 
 }

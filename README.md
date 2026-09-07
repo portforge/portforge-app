@@ -31,12 +31,8 @@ This program is still at a very early stage. There are going to be bugs, I hones
 - Add support for managing mods without reinstalling
 - Add support for building games for mobile platforms like Android and Nintendo Switch
 - Expand documentation to include how to dump ROMs
-- Expand ROM management functionality
-- Build complete ROM database based on No-Intro and Redump
-- Add support for playing Rom files via emulators
 - Add support for getting older PC games to run
-- Add support for dumping disc-based games with `redumper`
-
+- Add support for dumping disc-based games with `redumper` (has been moved to it's own TBA project)
 ---
 
 ## Features
@@ -44,8 +40,8 @@ This program is still at a very early stage. There are going to be bugs, I hones
 - **Library view** — browse available game ports with cover art and banner images
 - **One-click install** — download, extract, build, and launch from a single button
 - **Build system** — supports ports that must be compiled from source (e.g. SM64 ports), with per-platform build specs, multi-variant installs, and user-configurable args
-- **ROM management** — import ROMs by drag-and-drop; PortForge matches files by checksum and stores them in a central library; the library is indexed in SQLite for fast lookups without re-scanning on every page open
-- **Install variants** — choose ROM region, texture pack, or other options before installing; options requiring a missing ROM are shown as unavailable
+- **ROM management** — each game page lists the ROMs that game needs, with the filename, size and checksums of every accepted dump and whether you already have it; add missing files by drag-and-drop or from the page itself. PortForge matches by checksum rather than filename and indexes the library in SQLite for fast lookups
+- **Install variants** — choose ROM region, texture pack, or other options before installing
 - **Library updates** — when the MediaItems library is synced, installed games are compared against the new version; an **Update** button appears on the game page when the library has changed
 - **Play time tracking** — session length is recorded and added to a time counter
 - **Uninstall** — remove installed files via the UI, with optional custom uninstall steps per game
@@ -107,17 +103,19 @@ The library is a folder tree of _MediaItems_ — JSON files that describe games,
 
 ```
 mediaitems/
-├── VideoGameVersion/
+├── VideoGameFanPort/
 │   └── Super Mario 64 Render96 · 2020/
 │       ├── .mediaitem.json     ← game metadata, download URL, ROM dependencies
-│       ├── .install.json       ← build spec (optional)
+│       ├── .forge.json        ← build spec (optional)
 │       └── .artwork/
-│           ├── cover.jpg
-│           └── banner.jpg
-└── VideoGameRom/
-    └── Super Mario 64 (USA)/
+│           ├── Cover · en · 1.jpg
+│           └── Banner · en · 1.jpg
+└── N64CartRom/
+    └── Super Mario 64 (USA) · N64/
         └── .mediaitem.json     ← ROM title, platform, expected checksums
 ```
+
+ROM item types name the platform, the medium and the form: `N64CartRom`, `NESCartRom`, `GBCartRom`, `GBCCartRom`, `PS1DiscImage`, `Xbox360DiscImage`.
 
 A SQLite index (`library.db` in the config directory) caches the listing fields from these JSON files and the presence of user ROM files so lookups are fast without re-parsing files on every page open. The index is rebuilt automatically after each sync, and can be refreshed manually at any time via **Refresh index** on the **Settings** page.
 
@@ -131,15 +129,31 @@ When a game is installed or a ROM is imported, PortForge copies the relevant Med
 
 ## ROM library
 
-ROMs are stored in the user data folder and identified by MD5 checksum rather than filename. To add ROMs, drag and drop the files onto any PortForge window. PortForge matches each file against the known ROMs in the library and offers to copy or move it into place.
+ROMs are stored in the user data folder and identified by MD5 checksum rather than filename.
+
+They appear in two places, showing the same thing:
+
+- **On a game's page**, under **Required ROMs** — what this port needs, and whether you have it.
+- **On the ROMs page**, grouped by port — every ROM the ports in your catalog can use, and how much of that you already hold.
+
+A port declares one requirement per thing it needs, and any one of a requirement's accepted dumps satisfies it: a three-disc game asks for each disc and takes any region for each. Opening a requirement lists every accepted dump with its filename, size, extension and checksums, marking the ones already in your library.
+
+This is not a general ROM browser. Only ROMs that some port in the catalog can use are listed, and a ROM you own that nothing references does not appear.
+
+There are two ways to add a ROM:
+
+- **Drag and drop** the files onto any PortForge window. Each file is matched against every known ROM in the catalog, and PortForge offers to copy or move it into place.
+- **Add file…** on a game page or on the ROMs page, which opens a file picker.
+
+Either way matching is by checksum, so files are recognised whatever they are named — which also means it does not matter which page you add them from.
 
 ---
 
 ## Build system
 
-All games come with a `.install.json` file alongside their `.mediaitem.json`. The spec defines dependencies, user-configurable args, and an ordered list of install steps.
+Games that need more than a download come with a `.forge.json` file alongside their `.mediaitem.json`. The spec defines dependencies, user-configurable args, and one or more builds, each an ordered list of install steps. The superseded `.install.json` name is still read for entries that have not been converted.
 
-See **[docs/build-system.md](docs/build-system.md)** for the full reference, including all step types (`fetch`, `extract`, `run`, `copy`, `move`, `defineExecutable`, and more), arg configuration, conditional steps, and a complete worked example.
+Specs are executed by **[Forge](https://github.com/zamiba/forge)** — a standalone, cross-platform build engine that PortForge embeds as a library. Forge's README documents the spec format in full; **[docs/build-system.md](docs/build-system.md)** covers the PortForge-specific parts, chiefly the `rom` provider that pulls ROMs out of your library mid-build.
 
 ### Quick example
 
@@ -147,64 +161,83 @@ See **[docs/build-system.md](docs/build-system.md)** for the full reference, inc
 [
   {
     "targetPlatforms": ["Linux"],
-    "dependencies": ["make", "gcc", "python3"],
+    "dependencies": ["make", "gcc", "python3", "unzip"],
     "args": {
-      "romVersion": {
+      "region": {
         "type": "choice",
         "label": "ROM region",
         "options": [
-          { "value": "us", "label": "US (NTSC)", "romTitle": "Super Mario 64 (USA)" },
-          { "value": "eu", "label": "European (PAL)", "romTitle": "Super Mario 64 (Europe) (En,Fr,De)" }
+          { "value": "us", "label": "US (NTSC)" },
+          { "value": "eu", "label": "European (PAL)" }
         ]
       }
     },
     "steps": [
+      { "step": "createDir", "path": ".build" },
       { "step": "fetch", "url": "https://example.com/source.zip", "dest": ".build/source.zip" },
-      { "step": "extract", "src": ".build/source.zip", "dest": ".build/" },
-      { "step": "copy", "from": "rom", "arg": "romVersion", "dest": ".build/source/baserom.${romVersion}.z64" },
-      { "step": "run", "cmd": "make", "args": ["VERSION=${romVersion}"] },
-      { "step": "move", "src": ".build/source/build/${romVersion}_pc", "dest": "install" },
-      { "step": "defineExecutable", "executable": "install/sm64.${romVersion}.f3dex2e" }
+      { "step": "extract", "src": ".build/source.zip", "dest": ".build" },
+      { "step": "copy", "from": "rom", "src": "Super Mario 64 (USA)", "dest": ".build/source/baserom.${region}.z64" },
+      { "step": "run", "cmd": "make", "args": ["VERSION=${region}"] },
+      { "step": "move", "src": ".build/source/build/${region}_pc", "dest": "install" },
+      { "step": "deletePath", "path": ".build" },
+      { "step": "defineExecutable", "executable": "install/sm64.${region}.f3dex2e", "title": "Play" }
     ]
   }
 ]
 ```
 
+A spec may only run commands it declares in `dependencies`, and every path it touches must stay inside the game's own data folder.
+
 ---
 
 ## Project structure
 
+PortForge is one program in a suite built around [MediaItems](#on-mediaitems). The build engine lives in its own repository so other tools can reuse it:
+
+| Repository | Role |
+| ---------- | ---- |
+| [portforge-app](https://github.com/zamiba/portforge-app) | This app: library UI, ROM management, install and launch |
+| [forge](https://github.com/zamiba/forge) | The build engine that executes `.forge.json` specs, plus a CLI |
+| [portforge-mediaitems](https://github.com/zamiba/portforge-mediaitems) | The MediaItems catalog of games, versions and ROMs |
+
 ```
 portforge/
-├── app.go                  ← backend: install, launch, ROM management, settings
-├── main.go                 ← Wails entry point and DragAndDrop configuration
+├── app.go                  ← backend: catalog, launch, ROM management, storage
+├── install.go              ← bridges the forge engine: ROM provider, event forwarding
+├── main.go                 ← Wails entry point, -server flag, DragAndDrop configuration
+├── server.go               ← -server mode: static assets, RPC, SSE
+├── shim.go                 ← rebuilds the Wails bindings for a browser
+├── events.go               ← one event path for both the window and -server
+├── migrate.go              ← one-time upgrades (library path, renamed item folders)
+├── storage.go              ← free space and the library's own footprint
+├── thumbs.go               ← artwork resizing and the thumbnail cache
 ├── dev.go                  ← dev-mode overrides (catalog path, build tag: dev)
-├── disc.go                 ← optical drive detection, disc identification
-├── disc_linux.go           ← Linux drive enumeration via /proc and ioctl
-├── disc_darwin.go          ← macOS drive enumeration via diskutil
-├── disc_windows.go         ← Windows drive enumeration via GetDriveType
-├── disc_watcher_linux.go   ← event-driven disc monitoring via go-udev
-├── disc_watcher_other.go   ← no-op watcher for macOS and Windows
-├── redumper.go             ← redumper subprocess integration
 ├── launch_unix.go          ← platform-specific launch logic
 ├── launch_windows.go
+├── storageunits/           ← the storage location list, shared across the suite
 ├── models/
 │   └── models.go           ← shared data types (VideoGameVersion, InstallState, etc.)
+│                             install spec types live in the forge engine
 ├── metadata/
 │   └── loader.go           ← reads the MediaItems library and user state files
 ├── store/
 │   └── store.go            ← SQLite library index (media_items, rom_formats)
 ├── frontend/
 │   └── src/
-│       ├── App.vue               ← shell, navigation, global install state
-│       └── components/
-│           ├── GameLibrary.vue
-│           ├── GameDetail.vue
-│           ├── RomLibrary.vue
-│           ├── DiscDumper.vue    ← disc dumping UI (dev builds only)
-│           └── Settings.vue
+│       ├── App.vue                  ← shell, navigation, global install state
+│       ├── components/
+│       │   ├── Sidebar.vue
+│       │   ├── GameLibrary.vue
+│       │   ├── GameDetail.vue       ← game page: install, launch, required ROMs
+│       │   ├── RomLibrary.vue       ← the ROMs page
+│       │   ├── RomRequirements.vue  ← the requirement list both pages render
+│       │   └── Settings.vue
+│       ├── composables/             ← ROM requirement rules, theme
+│       ├── lib/                     ← artwork URLs and display widths
+│       └── styles/                  ← palette, fonts, shared primitives
 ├── docs/
-│   └── build-system.md     ← full build spec reference
+│   └── build-system.md     ← PortForge-specific parts of the build system
+├── CHANGELOG.md
 └── wails.json
 ```
 
