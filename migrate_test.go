@@ -174,11 +174,14 @@ func TestAnOldInstallMigratesEndToEnd(t *testing.T) {
 	}
 
 	// An install from before either rename: a chosen library folder recorded in
-	// the private settings file, with content filed under the old type names.
+	// the private settings file, with content filed under the old type names —
+	// including the update-detection snapshots under library/, which mirror the
+	// catalog's layout and carry the same folder names a second time.
 	library := t.TempDir()
 	for _, p := range []string{
 		filepath.Join("VideoGameVersion", "Ship of Harkinian · 2022", "install"),
 		filepath.Join("N64Rom", "Legend of Zelda, The - Ocarina of Time (USA) · N64"),
+		filepath.Join("library", "VideoGameVersion", "Ship of Harkinian · 2022"),
 	} {
 		if err := os.MkdirAll(filepath.Join(library, p), 0755); err != nil {
 			t.Fatal(err)
@@ -191,11 +194,9 @@ func TestAnOldInstallMigratesEndToEnd(t *testing.T) {
 	settings := filepath.Join(t.TempDir(), "settings.json")
 	writeLegacySettings(t, settings, library)
 
-	// Exactly the sequence in startup.
+	// The real sequence, not a copy of it — App.migrate is what startup calls.
 	a := &App{units: m}
-	migrateLibraryPath(m, settings)
-	a.syncDataPath()
-	migrateLegacyTypeDirs(a.dataPath)
+	a.migrate(settings)
 
 	if a.dataPath != library {
 		t.Fatalf("the storage root is %q, want the migrated library %q", a.dataPath, library)
@@ -203,12 +204,15 @@ func TestAnOldInstallMigratesEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		filepath.Join("VideoGameFanPort", "Ship of Harkinian · 2022", "install"),
 		filepath.Join("N64CartRom", "Legend of Zelda, The - Ocarina of Time (USA) · N64", "oot.z64"),
+		// Left behind, ScanUserLibraryUpdates never finds this port again and it
+		// silently stops reporting catalog updates.
+		filepath.Join("library", "VideoGameFanPort", "Ship of Harkinian · 2022"),
 	} {
 		if _, err := os.Stat(filepath.Join(library, want)); err != nil {
 			t.Errorf("%s did not survive the migration: %v", want, err)
 		}
 	}
-	for _, gone := range []string{"VideoGameVersion", "N64Rom"} {
+	for _, gone := range []string{"VideoGameVersion", "N64Rom", filepath.Join("library", "VideoGameVersion")} {
 		if _, err := os.Stat(filepath.Join(library, gone)); err == nil {
 			t.Errorf("%s should have been renamed away", gone)
 		}

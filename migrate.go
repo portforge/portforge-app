@@ -136,3 +136,33 @@ func legacySettingsPath() string {
 	}
 	return filepath.Join(dir, "settings.json")
 }
+
+// migrate applies every one-time upgrade, in the order they depend on each
+// other, and is the whole of what startup does about them.
+//
+// It exists as a function so a test can run the real sequence rather than a
+// hand-copied imitation of it. A test that reproduces these calls itself proves
+// only that the migrations work when called — it cannot notice one going missing
+// from startup, which is the failure that actually reaches a user.
+func (a *App) migrate(legacySettings string) {
+	// Carry a library folder chosen in an earlier version into the shared list
+	// before deriving anything from it, so an upgrade does not present the
+	// first-run screen to someone who already configured PortForge.
+	if a.units != nil {
+		migrateLibraryPath(a.units, legacySettings)
+		a.syncDataPath()
+	}
+
+	// The ItemType folders under the storage root were renamed twice; a user's
+	// imported files are filed by those names. Only this program's own root is
+	// touched — the other units in the shared list may belong to programs whose
+	// layout is not ours to rewrite.
+	migrateLegacyTypeDirs(a.dataPath)
+
+	// The same folder names appear again inside the update-detection snapshots,
+	// which mirror the catalog's layout. Missing this one fails silently rather
+	// than loudly: ScanUserLibraryUpdates reads only the current type names,
+	// finds nothing under the superseded ones, and every port installed before
+	// the rename quietly stops reporting catalog updates.
+	migrateLegacyTypeDirs(a.userLibraryPath())
+}

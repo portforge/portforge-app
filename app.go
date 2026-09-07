@@ -478,18 +478,8 @@ func (a *App) startup(ctx context.Context) {
 	// not have opened.
 	if m, err := storageunits.NewManager(); err == nil {
 		a.units = m
-		// Carry a library folder chosen in an earlier version into the shared
-		// list before deriving anything from it, so an upgrade does not present
-		// the first-run screen to someone who already configured PortForge.
-		migrateLibraryPath(m, legacySettingsPath())
-		a.syncDataPath()
 	}
-
-	// The ItemType folders under the storage root were renamed twice; a user's
-	// imported files are filed by those names. Only this program's own root is
-	// touched — the other units in the shared list may belong to programs whose
-	// layout is not ours to rewrite.
-	migrateLegacyTypeDirs(a.dataPath)
+	a.migrate(legacySettingsPath())
 
 	// Open the library index database. On first run (empty DB) rebuild from the
 	// catalog, then index any ROM files already in the user library.
