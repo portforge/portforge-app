@@ -16,6 +16,16 @@ This program is still at a very early stage. There are going to be bugs, I hones
 
 ---
 
+## Support this project
+
+This project, along with everything else that I make here, is and will remain fully open source, with no proprietary components and no paywalled features.
+
+I freelance full time, so every bit of support is time that I can spend on this and my other projects.
+
+- [Patreon](https://patreon.com/zamiba)
+
+---
+
 ## On MediaItems
 
 `MediaItem` is a filesystem-native open standard for cataloguing, archiving, and interacting with any form of media of my own invention. Documentation covering the standard will be released "soon™".
@@ -33,6 +43,7 @@ This program is still at a very early stage. There are going to be bugs, I hones
 - Expand documentation to include how to dump ROMs
 - Add support for getting older PC games to run
 - Add support for dumping disc-based games with `redumper` (has been moved to it's own TBA project)
+
 ---
 
 ## Features
@@ -89,9 +100,9 @@ Produces a self-contained binary in `build/bin/`.
 
 On first launch PortForge asks for one folder:
 
-| Folder               | Purpose                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------ |
-| **User data folder** | Writable. PortForge stores your ROM files, installed games, and save state here.     |
+| Folder               | Purpose                                                                          |
+| -------------------- | -------------------------------------------------------------------------------- |
+| **User data folder** | Writable. PortForge stores your ROM files, installed games, and save state here. |
 
 The MediaItems library is managed automatically by PortForge and stored in the OS configuration directory.
 
@@ -194,11 +205,11 @@ A spec may only run commands it declares in `dependencies`, and every path it to
 
 PortForge is one program in a suite built around [MediaItems](#on-mediaitems). The build engine lives in its own repository so other tools can reuse it:
 
-| Repository | Role |
-| ---------- | ---- |
-| [portforge-app](https://github.com/zamiba/portforge-app) | This app: library UI, ROM management, install and launch |
-| [forge](https://github.com/zamiba/forge) | The build engine that executes `.forge.json` specs, plus a CLI |
-| [portforge-mediaitems](https://github.com/zamiba/portforge-mediaitems) | The MediaItems catalog of games, versions and ROMs |
+| Repository                                                             | Role                                                           |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------- |
+| [portforge-app](https://github.com/zamiba/portforge-app)               | This app: library UI, ROM management, install and launch       |
+| [forge](https://github.com/zamiba/forge)                               | The build engine that executes `.forge.json` specs, plus a CLI |
+| [portforge-mediaitems](https://github.com/zamiba/portforge-mediaitems) | The MediaItems catalog of games, versions and ROMs             |
 
 ```
 portforge/
